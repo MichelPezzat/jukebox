@@ -110,7 +110,7 @@ def make_vqvae(hps, device='cuda'):
     return vqvae
 
 def make_prior(hps, vqvae, device='cuda'):
-    #from jukebox.prior.prior import SimplePrior
+    from jukebox.prior.prior import SimplePrior
 
 
 
