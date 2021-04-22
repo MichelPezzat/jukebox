@@ -6,7 +6,8 @@ import torch.nn.functional as F
 import math
 import sys
 
-from jukebox.discrete_flow.lstm_flow import AFPrior,FeedForwardNet
+from jukebox.discrete_flow.lstm_flow import AFPrior
+from jukebox.discrete_flow.flows import FeedForwardNet
 from jukebox.discrete_flow.utils import make_pos_cond
 
 
