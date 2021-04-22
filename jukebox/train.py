@@ -173,7 +173,8 @@ def evaluate(model, orig_model, logger, metrics, data_processor, hps):
             log_input_output = (i==0)
 
             if hps.prior:
-                forw_kwargs = dict(y=y, fp16=hps.fp16, decode=log_input_output)
+                kl_weight = hps.start_kl_weight + hps.delta_kl_weight*i/len(data_processor.test_loader)
+                forw_kwargs = dict(y=y, kl_weight=kl_weight, decode=log_input_output, hps=hps)
             else:
                 forw_kwargs = dict(loss_fn=hps.loss_fn, hps=hps)
 
@@ -204,7 +205,7 @@ def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_proces
     model.train()
     orig_model.train()
     if hps.prior:
-        _print_keys = dict(l="loss", bpd="bpd", gn="gn", g_l="gen_loss", p_l="prime_loss")
+        _print_keys = dict(l="loss", bpd="bpd", kl_loss="kl_loss")
     else:
         _print_keys = dict(l="loss", sl="spectral_loss", rl="recons_loss", e="entropy", u="usage", uc="used_curr", gn="gn", pn="pn", dk="dk")
 
@@ -222,7 +223,8 @@ def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_proces
         log_input_output = (logger.iters % hps.save_iters == 0)
 
         if hps.prior:
-            forw_kwargs = dict(y=y, fp16=hps.fp16, decode=log_input_output)
+            kl_weight = hps.start_kl_weight + hps.delta_kl_weight*i/len(data_processor.train_loader)
+            forw_kwargs = dict(y=y, kl_weight=kl_weight, decode=log_input_output, hps=hps)
         else:
             forw_kwargs = dict(loss_fn=hps.loss_fn, hps=hps)
 
@@ -325,6 +327,13 @@ def run(hps="teeny", port=29500, **kwargs):
         metrics.reset()
         data_processor.set_epoch(epoch)
         if hps.train:
+
+            if hps.prior:
+                last_kl_weight, _ = get_kl_weight(hps, epoch-1)
+                cur_kl_weight, done = get_kl_weight(hps, epoch)
+                hps.start_kl_weight = last_kl_weight
+                hps.delta_kl_weight = cur_kl_weight-last_kl_weight
+
             train_metrics = train(distributed_model, model, opt, shd, scalar, ema, logger, metrics, data_processor, hps)
             train_metrics['epoch'] = epoch
             if rank == 0:
