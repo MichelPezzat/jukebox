@@ -1,7 +1,7 @@
 import torch as t
 import torch.nn as nn
 
-from jukebox.transformer.ops import LayerNorm
+#from jukebox.transformer.ops import LayerNorm
 from jukebox.vqvae.encdec import DecoderConvBock
 from jukebox.utils.torch_utils import assert_shape
 
