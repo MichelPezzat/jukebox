@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn.parameter import Parameter
 from torch.autograd import Variable
 
-from MADE import 
+from jukebox.discrete_flow.MADE import MADE
 
 
 
