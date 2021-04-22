@@ -103,13 +103,13 @@ HPARAMS_REGISTRY["upsampler_level_1"] = upsampler_level_1
 prior_5b = Hyperparams(
     level=2,
     n_ctx=8192,
-    prior_width=4800,
-    prior_depth=72,
-    heads=8,
-    attn_order=2,
-    blocks=128,
-    init_scale=0.1,
-    c_res=1,
+    n_flow=8,  # number of flows in WaveFlow
+    n_layers=8,  # number of conv block in each flow
+    n_group=16,  # folding factor of audio and spectrogram
+    channels=128,  # resiaudal channel in each flow
+    kernel_size=[3, 3],
+    n_mels=80,  # kernel size in each conv block
+    sigma=1.0,
     beta2=0.925,
     min_duration=60.0,
     max_duration=600.0,
@@ -208,15 +208,21 @@ small_vqvae = Hyperparams(
 HPARAMS_REGISTRY["small_vqvae"] = small_vqvae
 
 small_prior = Hyperparams(
+    level=2,
     n_ctx=8192,
-    prior_width=1024,
-    prior_depth=48,
-    heads=1,
+    res_channels=64,
+    n_height = 16,
+    cin_channels=1,
+    n_layer = 8,
+    n_flow = 8,
+    n_layer_per_cycle = 1,
     c_res=1,
-    attn_order=2,
-    blocks=64,
-    init_scale=0.7,
+    sigma=1.0,
+    upsample_factor=[16,16]
 )
+
+
+
 HPARAMS_REGISTRY["small_prior"] = small_prior
 
 small_labelled_prior = Hyperparams(
@@ -402,7 +408,6 @@ DEFAULTS["prior"] = Hyperparams(
     restore_prior_ddp=False,
     max_bow_genre_size=None,
     y_bins=0,
-    level=0,
     cond_levels=None,
     t_bins=64,
     y_cond_as_bias=False,
@@ -413,8 +418,34 @@ DEFAULTS["prior"] = Hyperparams(
     alignment_head=None,
 )
 
+DEFAULTS["discrete_flow"] = Hyperparams(
+    level=2,
+    n_ctx= 2048,
+    p_rnn_layers = 1,
+    p_rnn_units = 128,
+    p_num_flow_layers = 1,
+    nohiddenflow = False,
+    hiddenflow_layers = 1,
+    hiddenflow_units = 64,
+    hiddenflow_flow_layers = 3,
+    hiddenflow_scf_layers = True,
+    transform_function = 'affine',
+    inp_embedding_size = 128,
+    hidden_size = 128,
+    zsize = 50,
+    dropout_p = 0.2,
+    dlocs = ['prior_rnn'],
+    prior_type = 'IAF',
+    gen_bilstm_layers = 1,
+    q_rnn_layers = 1,
+    notie_weights = True,
+    indep_bernoulli = False,
+    ELBO_samples = 10,
+    kl_rampup_time = 10,
+    initial_kl_zero = 4,
+)
+
 DEFAULTS["prior_attn_block"] = Hyperparams(
-    n_ctx=1024,
     prior_depth=3,
     prior_width=128,
     heads=1,
