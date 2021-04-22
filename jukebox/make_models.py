@@ -110,16 +110,20 @@ def make_vqvae(hps, device='cuda'):
     return vqvae
 
 def make_prior(hps, vqvae, device='cuda'):
-    from jukebox.prior.prior import SimplePrior
+    #from jukebox.prior.prior import SimplePrior
 
-    prior_kwargs = dict(input_shape=(hps.n_ctx,), bins=vqvae.l_bins,
-                        width=hps.prior_width, depth=hps.prior_depth, heads=hps.heads,
-                        attn_order=hps.attn_order, blocks=hps.blocks, spread=hps.spread,
-                        attn_dropout=hps.attn_dropout, resid_dropout=hps.resid_dropout, emb_dropout=hps.emb_dropout,
-                        zero_out=hps.zero_out, res_scale=hps.res_scale, pos_init=hps.pos_init,
-                        init_scale=hps.init_scale,
-                        m_attn=hps.m_attn, m_mlp=hps.m_mlp,
-                        checkpoint_res=hps.c_res if hps.train else 0, checkpoint_attn=hps.c_attn if hps.train else 0, checkpoint_mlp=hps.c_mlp if hps.train else 0)
+
+
+    prior_kwargs = dict(vocab_size = vqvae.l_bins, loss_weights = torch.ones(vqvae.l_bins),
+                        n_inp_embedding = hps.inp_embedding_size, hidden_size = hps.hidden_size,zsize = hps.zsize, 
+                       dropout_p = hps.dropout_p, dropout_locations = hps.dlocs,prior_type = hps.prior_type, max_T = hps.n_ctx, 
+                       gen_bilstm_layers = hps.gen_bilstm_layers,q_rnn_layers = hps.q_rnn_layers, indep_bernoulli = hps.indep_bernoulli,
+                        tie_weights = not hps.notie_weights,checkpoint_res=hps.c_res if hps.train else 0)
+    
+    gen_kwargs = dict(p_rnn_layers = hps.p_rnn_layers, p_rnn_units = hps.p_rnn_units, p_num_flow_layers = hps.p_num_flow_layers,
+                       nohiddenflow = hps.nohiddenflow, hiddenflow_layers = hps.hiddenflow_layers, hiddenflow_units = hps.hiddenflow_units,
+                       hiddenflow_flow_layers = hps.hiddenflow_flow_layers, hiddenflow_scf_layers = hps.hiddenflow_scf_layers,
+                       transform_function = hps.transform_function)
 
     x_cond_kwargs = dict(out_width=hps.prior_width, init_scale=hps.init_scale,
                          width=hps.cond_width, depth=hps.cond_depth, m_conv=hps.cond_m_conv,
@@ -160,12 +164,12 @@ def make_prior(hps, vqvae, device='cuda'):
                         strides_t=vqvae.strides_t,
                         labels=hps.labels,
                         prior_kwargs=prior_kwargs,
+                        gen_kwargs=gen_kwargs,
                         x_cond_kwargs=x_cond_kwargs,
                         y_cond_kwargs=y_cond_kwargs,
                         prime_kwargs=prime_kwargs,
                         copy_input=hps.copy_input,
                         labels_v3=hps.labels_v3,
-                        merged_decoder=hps.merged_decoder,
                         single_enc_dec=hps.single_enc_dec)
 
     prior.alignment_head = hps.get('alignment_head', None)
@@ -250,5 +254,3 @@ def run(model, port=29500, **kwargs):
     with t.no_grad():
         save_outputs(model, device, hps)
 
-if __name__ == '__main__':
-    fire.Fire(run)
