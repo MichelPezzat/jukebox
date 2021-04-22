@@ -50,7 +50,7 @@ class LSTM_AFLayer(nn.Module):
                 raise ValueError('Error, hiddenflow_units must be greater than the inp_dim so all inp variables have connections to the output')
             
             MADE_dropout = [dropout_p, dropout_p] if 'ff' in dlocs else [0, 0]
-            self.outp_net = Flow(inp_dim, hiddenflow_layers, hiddenflow_units, 'relu', hiddenflow_flow_layers, transform_function, iaf_like=False,
+            self.outp_net = MADE_flow(inp_dim, hiddenflow_layers, hiddenflow_units, 'relu', hiddenflow_flow_layers, transform_function, iaf_like=False,
                                       swap_trngen_dirs=swap_trngen_dirs, conditional_inp_dim=after_rnn_inp_units, dropout=MADE_dropout,
                                       reverse_between_layers=True, scf_layers=hiddenflow_scf_layers, reverse_first_layer=hiddenflow_reverse_first)
         else:
