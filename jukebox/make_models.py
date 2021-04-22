@@ -114,7 +114,7 @@ def make_prior(hps, vqvae, device='cuda'):
 
 
 
-    prior_kwargs = dict(vocab_size = vqvae.l_bins, loss_weights = torch.ones(vqvae.l_bins),
+    prior_kwargs = dict(vocab_size = vqvae.l_bins, loss_weights = t.ones(vqvae.l_bins),
                         n_inp_embedding = hps.inp_embedding_size, hidden_size = hps.hidden_size,zsize = hps.zsize, 
                        dropout_p = hps.dropout_p, dropout_locations = hps.dlocs,prior_type = hps.prior_type, max_T = hps.n_ctx, 
                        gen_bilstm_layers = hps.gen_bilstm_layers,q_rnn_layers = hps.q_rnn_layers, indep_bernoulli = hps.indep_bernoulli,
