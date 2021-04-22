@@ -4,7 +4,7 @@ import torch.nn as nn
 import jukebox.utils.dist_adapter as dist
 
 from jukebox.transformer.ops import LayerNorm
-from jukebox.prior.autoregressive import ConditionalAutoregressive2D
+from jukebox.prior.discreteflow_model import DFModel
 from jukebox.prior.conditioners import Conditioner, LabelConditioner
 from jukebox.data.labels import EmptyLabeller, Labeller
 
@@ -26,7 +26,7 @@ we autoregressively model together.
 """
 class SimplePrior(nn.Module):
     def __init__(self, z_shapes, l_bins, encoder, decoder, level,
-                 downs_t, strides_t, labels, prior_kwargs, x_cond_kwargs, y_cond_kwargs,
+                 downs_t, strides_t, labels, prior_kwargs, gen_kwargs, x_cond_kwargs, y_cond_kwargs,
                  prime_kwargs, copy_input, labels_v3=False,
                  merged_decoder=False, single_enc_dec=False):
         super().__init__()
@@ -117,13 +117,9 @@ class SimplePrior(nn.Module):
                 nn.init.normal_(self.prime_x_out.weight, std=0.02 * prior_kwargs['init_scale'])
             else:
                 self.prime_loss_dims = 0
-            self.gen_loss_dims = np.prod(self.z_shape)
-            self.total_loss_dims = self.prime_loss_dims + self.gen_loss_dims
-            self.prior = ConditionalAutoregressive2D(x_cond=(self.x_cond or self.y_cond), y_cond=self.y_cond,
-                                                     encoder_dims = self.prime_loss_dims, merged_decoder=merged_decoder,
-                                                     **prior_kwargs)
+            self.prior = DFModel(gen_kwargs = gen_kwargs, x_cond=(self.x_cond or self.y_cond), y_cond=self.y_cond, **prior_kwargs)
 
-        self.n_ctx = self.gen_loss_dims
+        self.n_ctx = np.prod(self.z_shape)
         self.downsamples = calculate_strides(strides_t, downs_t)
         self.cond_downsample = self.downsamples[level+1] if level != self.levels - 1 else None
         self.raw_to_tokens = np.prod(self.downsamples[:level+1])
@@ -273,8 +269,7 @@ class SimplePrior(nn.Module):
             else:
                 encoder_kv = self.get_encoder_kv(prime, fp16=fp16, sample=True)
                 if no_past_context:
-                    z = self.prior.sample(n_samples, x_cond, y_cond, encoder_kv, fp16=fp16, temp=temp, top_k=top_k,
-                                          top_p=top_p, sample_tokens=sample_tokens)
+                    z = self.prior.generate(n_samples, temp=temp, argmax_x=False)
                 else:
                     z = self.prior.primed_sample(n_samples, z, x_cond, y_cond, encoder_kv, fp16=fp16, temp=temp,
                                              top_k=top_k, top_p=top_p, chunk_size=chunk_size, sample_tokens=sample_tokens)
@@ -309,7 +304,7 @@ class SimplePrior(nn.Module):
             prime_loss = t.tensor(0.0, device='cuda')
         return prime_loss
 
-    def z_forward(self, z, z_conds=[], y=None, fp16=False, get_preds=False, get_attn_weights=False):
+    def z_forward(self, z, kl_weight, hps, z_conds=[], y=None, fp16=False, get_preds=False, get_attn_weights=False):
         """
         Arguments:
             get_attn_weights (bool or set): Makes forward prop dump
@@ -321,6 +316,7 @@ class SimplePrior(nn.Module):
         if get_attn_weights:
             self.prior.transformer.set_record_attn(get_attn_weights)
         x_cond, y_cond, prime = self.get_cond(z_conds, y)
+        #lengths = t.randint(hps.sr//self.raw_to_tokens,self.n_ctx,size=z.shape[0],dtype=np.int64)
         if self.copy_input:
             prime = z[:,:self.n_tokens]
         if self.single_enc_dec:
@@ -329,24 +325,19 @@ class SimplePrior(nn.Module):
         else:
             encoder_kv = self.get_encoder_kv(prime, fp16=fp16)
             prime_loss = self.get_prime_loss(encoder_kv, prime)
-            gen_loss, preds = self.prior(z, x_cond, y_cond, encoder_kv, fp16=fp16, get_preds=get_preds)
-        loss = (self.prime_loss_fraction*prime_loss*self.prime_loss_dims/self.total_loss_dims) + \
-                   (gen_loss*self.gen_loss_dims/self.total_loss_dims)
-        metrics=dict(bpd=gen_loss.clone().detach(), prime_loss=prime_loss.clone().detach(),
-                     gen_loss=gen_loss.clone().detach())
-        if get_preds:
-            metrics["preds"] = preds.clone().detach()
-        if get_attn_weights:
-            ws = self.prior.transformer.ws
-            self.prior.transformer.set_record_attn(False)
-            return ws
-        else:
-            return loss, metrics
+            loss, kl_loss  = self.prior.evaluate_x(z,  hps, kl_weight)
+        #loss = (self.prime_loss_fraction*prime_loss*self.prime_loss_dims/self.total_loss_dims) + \
+         #          (gen_loss*self.gen_loss_dims/self.total_loss_dims)
+        metrics=dict(bpd=loss.clone().detach(), kl_loss=kl_loss.clone().detach(),
+                     gen_loss=loss.clone().detach())
 
-    def forward(self, x, y=None, fp16=False, decode=False, get_preds=False):
+        
+        return loss, metrics
+
+    def forward(self, x, kl_weight, hps, y=None, decode=False):
         bs = x.shape[0]
         z, *z_conds = self.encode(x, bs_chunks=bs)
-        loss, metrics = self.z_forward(z=z, z_conds=z_conds, y=y, fp16=fp16, get_preds=get_preds)
+        loss, metrics = self.z_forward(z=z,kl_weight=kl_weight,z_conds=z_conds,y=y,hps=hps)
         if decode:
             x_out = self.decode([z, *z_conds])
         else:
