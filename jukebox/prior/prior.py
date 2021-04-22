@@ -3,7 +3,7 @@ import torch as t
 import torch.nn as nn
 import jukebox.utils.dist_adapter as dist
 
-from jukebox.transformer.ops import LayerNorm
+#from jukebox.transformer.ops import LayerNorm
 from jukebox.prior.discreteflow_model import DFModel
 from jukebox.prior.conditioners import Conditioner, LabelConditioner
 from jukebox.data.labels import EmptyLabeller, Labeller
