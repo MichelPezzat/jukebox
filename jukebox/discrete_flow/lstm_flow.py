@@ -6,10 +6,9 @@ import time
 import torch
 from torch import nn
 
-from flows import Affine, NLSq
-from flows import Flow as MADE_flow
-from common import FeedForwardNet
-from utils import reverse_padded_sequence
+from jukebox.discrete_flow.flows import Affine, NLSq, FeedForwardNet
+from jukebox.discrete_flow.flows import Flow as MADE_flow
+from jukebox.discrete_flow.utils import reverse_padded_sequence
 
 
 
