@@ -20,6 +20,7 @@ from jukebox.utils.dist_utils import print_once, allreduce, allgather
 from jukebox.utils.ema import CPUEMA, FusedEMA, EMA
 from jukebox.utils.fp16 import FP16FusedAdam, FusedAdam, LossScalar, clipped_grad_scale, backward
 from jukebox.data.data_processor import DataProcessor
+from jukebox.discrete_flow.utils import get_kl_weight
 
 def prepare_aud(x, hps):
     x = audio_postprocess(x.detach().contiguous(), hps)
