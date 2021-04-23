@@ -267,7 +267,7 @@ class DFModel(nn.Module):
         lengths = [len(batch_i) for batch_i in x]
         lengths = torch.tensor(lengths).to(x.device)
 
-        with t.no_grad():
+        with torch.no_grad():
             x = self.preprocess(x)
         
 
