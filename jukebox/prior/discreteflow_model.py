@@ -310,12 +310,12 @@ class DFModel(nn.Module):
 
         loss = reconst_loss + 0.*kl_loss
 
-        indices = torch.arange(x.shape[0]).view(-1, 1).to(device)
-        loss_mask = indices >= lengths.view(1, -1)
-        loss_mask = loss_mask[:, :, None].repeat(1, 1, loss.shape[-1])
+        #indices = torch.arange(x.shape[0]).view(-1, 1).to(x.device)
+        #loss_mask = indices >= lengths.view(1, -1)
+        #loss_mask = loss_mask[:, :, None].repeat(1, 1, loss.shape[-1])
         
-        loss[loss_mask] = 0
-        kl_loss[loss_mask] = 0
+        #loss[loss_mask] = 0
+        #kl_loss[loss_mask] = 0
 
         #if not hps.noT_condition:
          #   denom = (lengths+1).float() # if T conditioning, should normalizing by lengths+1 to be the same as normal <eos>-including models
