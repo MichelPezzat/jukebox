@@ -308,7 +308,7 @@ class DFModel(nn.Module):
 
         kl_loss = (log_q_z - log_p_z) # [T, B, s]
 
-        loss = reconst_loss + 0.*kl_loss
+        loss = reconst_loss + kl_weight*kl_loss
 
         #indices = torch.arange(x.shape[0]).view(-1, 1).to(x.device)
         #loss_mask = indices >= lengths.view(1, -1)
@@ -322,7 +322,6 @@ class DFModel(nn.Module):
         #else:
         denom = (lengths).float()
 
-        denom = (lengths).float()
         loss = loss.mean(-1).sum(0)
         
         kl_loss = kl_loss.mean(-1).sum(0).sum()
