@@ -11,9 +11,9 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 from collections import OrderedDict
-
 from neural_operations import ConvBNSwish, normalize_weight_jit
 import thirdparty.dist_adapter as dist
+from thirdparty.checkpoint import checkpoint
 
 AROPS = OrderedDict([
     ('conv_3x3', lambda C, masked, zero_diag: ELUConv(C, C, 3, 1, 1, masked=masked, zero_diag=zero_diag))
@@ -71,11 +71,11 @@ def norm(t, dim):
     return torch.sqrt(torch.sum(t * t, dim))
 
 def _convert_arconv_weights_to_fp16(l):
-    if isinstance(l, ARConv1d):
+    if isinstance(l, ARConv1D):
         l.weight.data = l.weight.data.half()
         
         
-class ARConv1d(nn.Conv1d):
+class ARConv1D(nn.Conv1d):
     """Allows for weights as input."""
 
     def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=False,
@@ -84,7 +84,7 @@ class ARConv1d(nn.Conv1d):
         Args:
             use_shared (bool): Use weights for this layer or not?
         """
-        super(ARConv1d, self).__init__(C_in, C_out, kernel_size, stride, padding, dilation, groups, bias)
+        super(ARConv1D, self).__init__(C_in, C_out, kernel_size, stride, padding, dilation, groups, bias)
         self.causal = causal
         self.mode = mode
         if self.causal and self.mode == 'SAME':
@@ -93,12 +93,13 @@ class ARConv1d(nn.Conv1d):
             self.padding = dilation * (kernel_size - 1) // 2
         else:
             self.padding = 0
-      
+ 
 
         # init weight normalizaition parameters
         init = torch.log(norm(self.weight, dim=[1, 2]).view(-1, 1, 1) + 1e-2)
         self.log_weight_norm = nn.Parameter(init, requires_grad=True)
         self.weight_normalized = None
+
 
     def normalize_weight(self):
         weight = self.weight
@@ -115,7 +116,7 @@ class ARConv1d(nn.Conv1d):
         """
         self.weight_normalized = self.normalize_weight()
         bias = self.bias
-        out = F.conv1d(x, self.weight_normalized, bias, self.stride,
+        out = F.conv1d(x, self.weight_normalized.type_as(x), bias.type_as(x) if bias!=None else bias, self.stride,
                         self.padding, self.dilation, self.groups)
         if self.causal and self.padding is not 0:
             out = out[:, :, :-self.padding]
@@ -125,10 +126,11 @@ class ARConv1d(nn.Conv1d):
 class ELUConv(nn.Module):
     """ReLU + Conv2d + BN."""
 
-    def __init__(self, C_in, C_out, kernel_size, padding=0, dilation=1, causal=False,
-        mode='SAME', weight_init_coeff=1.0):
+    def __init__(self, C_in, C_out, kernel_size, padding=0, dilation=1, causal=True,
+        mode='SAME', weight_init_coeff=1.0, checkpoint_res=False):
         super(ELUConv, self).__init__()
-        self.conv_0 = ARConv1d(C_in, C_out, kernel_size, stride=1, padding=padding, bias=True, dilation=dilation,
+        self.checkpoint_res = checkpoint_res
+        self.conv_0 = ARConv1D(C_in, C_out, kernel_size, stride=1, padding=padding, bias=True, dilation=dilation,
                               causal = causal, mode = mode)
         # change the initialized log weight norm
         self.conv_0.log_weight_norm.data += np.log(weight_init_coeff)
@@ -139,30 +141,42 @@ class ELUConv(nn.Module):
             x (torch.Tensor): of size (B, C_in, H)
         """
         out = F.elu(x)
-        out = self.conv_0(out)
+        if self.checkpoint_res == 1:
+            out = checkpoint(self.conv_0, (out, ), self.conv_0.parameters(), True)
+        else:
+            out = self.conv_0(out)
             
         return out
 
 
 class ARInvertedResidual(nn.Module):
     def __init__(self, inz, inf, ex=6, dil=1, k=5,
-        mode='SAME'):
+        mode='SAME',checkpoint_res=False):
         super(ARInvertedResidual, self).__init__()
         hidden_dim = int(round(inz * ex))
         padding = dil * (k - 1) // 2
         layers = []
-        layers.extend([ARConv1d(inz, hidden_dim, kernel_size=3, padding=1, causal = True, mode = mode),
+        layers.extend([ARConv1D(inz, hidden_dim, kernel_size=3, padding=1,mode=mode,causal=True),
                        nn.ELU(inplace=True)])
-        layers.extend([ARConv1d(hidden_dim, hidden_dim, groups=hidden_dim, kernel_size=k, padding=padding, dilation=dil,
+        layers.extend([ARConv1D(hidden_dim, hidden_dim, groups=hidden_dim, kernel_size=k, padding=padding, dilation=dil,
                                         causal=True, mode=mode),
                       nn.ELU(inplace=True)])
-        
-        self.convz = nn.Sequential(*layers)
+        self.checkpoint_res = checkpoint_res
+        if self.checkpoint_res == 1:
+            if dist.get_rank() == 0:
+                print("Checkpointing convs")
+            self.layers = nn.ModuleList(layers)
+        else:
+            self.convz = nn.Sequential(*layers)
         self.hidden_dim = hidden_dim
 
     def forward(self, z, ftr):
-
-        return self.convz(z)
+        if self.checkpoint_res == 1:
+            for layer in self.layers:
+                z = checkpoint(layer, (z, ), layer.parameters(), True)
+            return z
+        else:
+            return self.convz(z)
 
 
 
