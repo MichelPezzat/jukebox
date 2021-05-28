@@ -7,7 +7,7 @@ import os
 import numpy as np
 import torch as t
 import jukebox.utils.dist_adapter as dist
-from jukebox.hparams import Hyperparams, setup_hparams, REMOTE_PREFIX
+from jukebox.hparams import REMOTE_PREFIX
 from jukebox.utils.remote_utils import download
 from jukebox.utils.torch_utils import freeze_model
 from jukebox.utils.dist_utils import print_all
@@ -70,31 +70,37 @@ def restore_opt(opt, shd, checkpoint_path):
     if "step" in checkpoint:
         shd.step(checkpoint['step'])
 
-def make_vqvae(hps, device='cuda'):
-    from jukebox.vqvae.vqvae import VQVAE
-    block_kwargs = dict(width=hps.width, depth=hps.depth, m_conv=hps.m_conv,
-                        dilation_growth_rate=hps.dilation_growth_rate,
-                        dilation_cycle=hps.dilation_cycle,
-                        reverse_decoder_dilation=hps.vqvae_reverse_decoder_dilation)
+def make_nvae(hps, device='cuda'):
+    from NVAE.model import AutoEncoder
 
-    if not hps.sample_length:
-        assert hps.sample_length_in_seconds != 0
-        downsamples = calculate_strides(hps.strides_t, hps.downs_t)
-        top_raw_to_tokens = np.prod(downsamples)
-        hps.sample_length = (hps.sample_length_in_seconds * hps.sr // top_raw_to_tokens) * top_raw_to_tokens
-        print(f"Setting sample length to {hps.sample_length} (i.e. {hps.sample_length/hps.sr} seconds) to be multiple of {top_raw_to_tokens}")
+    vae_kwargs = dict(sample_length=hps.sample_length,num_nf=hps.num_nf, 
+                num_cell_per_cond_enc=hps.num_cell_per_cond_enc,num_cell_per_cond_dec=hps.num_cell_per_cond_dec,
+                num_latent_scales=hps.num_latent_scales, num_groups_per_scale=hps.num_groups_per_scale,
+                num_latent_per_group=hps.num_latent_per_group, min_groups_per_scale=hps.min_groups_per_scale,
+                num_channels_enc=hps.num_channels_enc, num_preprocess_blocks=hps.num_preprocess_blocks,
+                num_preprocess_cells=hps.num_preprocess_cells, num_channels_dec=hps.num_channels_dec,
+                num_postprocess_cells=hps.num_postprocess_cells, num_postprocess_blocks=hps.num_postprocess_blocks,
+                use_se=hps.use_se, res_dist=hps.res_dist,ada_groups=hps.ada_groups, 
+                num_x_bits=hps.num_x_bits, checkpoint_res=hps.c_res if hps.train else 0)
+    
+    arch_instance = dict(normal_enc=hps.normal_enc, down_enc=hps.down_enc, normal_dec=hps.normal_dec,
+                         up_dec=hps.up_dec, normal_pre=hps.normal_pre,
+                         down_pre=hps.down_pre, normal_post=hps.normal_post, up_post=hps.up_post,
+                         ar_nn=hps.ar_nn)
+    
+    nvae = AutoEncoder(arch_instance=arch_instance, **vae_kwargs)
 
-    vqvae = VQVAE(input_shape=(hps.sample_length,1), levels=hps.levels, downs_t=hps.downs_t, strides_t=hps.strides_t,
-                  emb_width=hps.emb_width, l_bins=hps.l_bins,
-                  mu=hps.l_mu, commit=hps.commit,
-                  spectral=hps.spectral, multispectral=hps.multispectral,
-                  multipliers=hps.hvqvae_multipliers, use_bottleneck=hps.use_bottleneck,
-                  **block_kwargs)
+    nvae = nvae.to(device)
+    restore_model(hps, nvae, hps.restore_vqvae)
+    if hps.fp16_params:
+        print_all("Converting to fp16 params")
+        from NVAE.neural_operations import _convert_conv_weights_to_fp16
+        from NVAE.neural_ar_operations import _convert_arconv_weights_to_fp16
+        nvae.apply(_convert_conv_weights_to_fp16)
+        nvae.apply(_convert_arconv_weights_to_fp16)
 
-    vqvae = vqvae.to(device)
-    restore_model(hps, vqvae, hps.restore_vqvae)
     if hps.train and not hps.prior:
-        print_all(f"Loading vqvae in train mode")
+        print_all(f"Loading nvae in train mode")
         if hps.restore_vqvae != '':
             print_all("Reseting bottleneck emas")
             for level, bottleneck in enumerate(vqvae.bottleneck.level_blocks):
@@ -107,23 +113,19 @@ def make_vqvae(hps, device='cuda'):
         print_all(f"Loading vqvae in eval mode")
         vqvae.eval()
         freeze_model(vqvae)
-    return vqvae
+    return nvae
 
 def make_prior(hps, vqvae, device='cuda'):
     from jukebox.prior.prior import SimplePrior
 
-
-
-    prior_kwargs = dict(vocab_size = vqvae.l_bins, loss_weights = t.ones(vqvae.l_bins),
-                        n_inp_embedding = hps.inp_embedding_size, hidden_size = hps.hidden_size,zsize = hps.zsize, 
-                       dropout_p = hps.dropout_p, dropout_locations = hps.dlocs,prior_type = hps.prior_type, max_T = hps.n_ctx, 
-                       gen_bilstm_layers = hps.gen_bilstm_layers,q_rnn_layers = hps.q_rnn_layers, indep_bernoulli = hps.indep_bernoulli,
-                        tie_weights = not hps.notie_weights,checkpoint_res=hps.c_res if hps.train else 0)
-    
-    gen_kwargs = dict(p_rnn_layers = hps.p_rnn_layers, p_rnn_units = hps.p_rnn_units, p_num_flow_layers = hps.p_num_flow_layers,
-                       nohiddenflow = hps.nohiddenflow, hiddenflow_layers = hps.hiddenflow_layers, hiddenflow_units = hps.hiddenflow_units,
-                       hiddenflow_flow_layers = hps.hiddenflow_flow_layers, hiddenflow_scf_layers = hps.hiddenflow_scf_layers,
-                       transform_function = hps.transform_function)
+    prior_kwargs = dict(input_shape=(hps.n_ctx,), bins=vqvae.l_bins,
+                        width=hps.prior_width, depth=hps.prior_depth, heads=hps.heads,
+                        attn_order=hps.attn_order, blocks=hps.blocks, spread=hps.spread,
+                        attn_dropout=hps.attn_dropout, resid_dropout=hps.resid_dropout, emb_dropout=hps.emb_dropout,
+                        zero_out=hps.zero_out, res_scale=hps.res_scale, pos_init=hps.pos_init,
+                        init_scale=hps.init_scale,
+                        m_attn=hps.m_attn, m_mlp=hps.m_mlp,
+                        checkpoint_res=hps.c_res if hps.train else 0, checkpoint_attn=hps.c_attn if hps.train else 0, checkpoint_mlp=hps.c_mlp if hps.train else 0)
 
     x_cond_kwargs = dict(out_width=hps.prior_width, init_scale=hps.init_scale,
                          width=hps.cond_width, depth=hps.cond_depth, m_conv=hps.cond_m_conv,
@@ -164,12 +166,12 @@ def make_prior(hps, vqvae, device='cuda'):
                         strides_t=vqvae.strides_t,
                         labels=hps.labels,
                         prior_kwargs=prior_kwargs,
-                        gen_kwargs=gen_kwargs,
                         x_cond_kwargs=x_cond_kwargs,
                         y_cond_kwargs=y_cond_kwargs,
                         prime_kwargs=prime_kwargs,
                         copy_input=hps.copy_input,
                         labels_v3=hps.labels_v3,
+                        merged_decoder=hps.merged_decoder,
                         single_enc_dec=hps.single_enc_dec)
 
     prior.alignment_head = hps.get('alignment_head', None)
@@ -253,4 +255,3 @@ def run(model, port=29500, **kwargs):
 
     with t.no_grad():
         save_outputs(model, device, hps)
-
