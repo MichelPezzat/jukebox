@@ -60,32 +60,21 @@ def get_ema(model, hps):
             ema = EMA(model.parameters(), mu=mu)
     return ema
 
-def get_lr_scheduler(opt, hps):
-    def lr_lambda(step):
-        if hps.lr_use_linear_decay:
-            lr_scale = hps.lr_scale * min(1.0, step / hps.lr_warmup)
-            decay = max(0.0, 1.0 - max(0.0, step - hps.lr_start_linear_decay) / hps.lr_decay)
-            if decay == 0.0:
-                if dist.get_rank() == 0:
-                    print("Reached end of training")
-            return lr_scale * decay
-        else:
-            return hps.lr_scale * (hps.lr_gamma ** (step // hps.lr_decay)) * min(1.0, step / hps.lr_warmup)
-
-    shd = t.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
-
-    return shd
 
 def get_optimizer(model, hps):
     # Optimizer
     betas = (hps.beta1, hps.beta2)
+    
+    
     if hps.fp16_opt:
         opt = FP16FusedAdam(model.parameters(), lr=hps.lr, weight_decay=hps.weight_decay, betas=betas, eps=hps.eps)
     else:
         opt = FusedAdam(model.parameters(), lr=hps.lr, weight_decay=hps.weight_decay, betas=betas, eps=hps.eps)
 
     # lr scheduler
-    shd = get_lr_scheduler(opt, hps)
+    if hps.lr_use_linear_decay:
+      shd = t.optim.lr_scheduler.CosineAnnealingLR(
+        opt, float(hps.epochs - hps.lr_warmup - 1), eta_min=hps.learning_rate_min)
 
     restore_path = hps.restore_prior if hps.prior else hps.restore_vqvae
     restore_opt(opt, shd, restore_path)
@@ -103,17 +92,10 @@ def get_optimizer(model, hps):
 
 def log_inputs(orig_model, logger, x_in, y, x_out, hps, tag="train"):
     print(f"Logging {tag} inputs/ouputs")
+    x_ds = orig_model.post_process(x_out.sample())
     log_aud(logger, f'{tag}_x_in', x_in, hps)
-    log_aud(logger, f'{tag}_x_out', x_out, hps)
+    log_aud(logger, f'{tag}_x_out', x_ds, hps)
     bs = x_in.shape[0]
-    if hps.prior:
-        if hps.labels:
-            log_labels(logger, orig_model.labeller, f'{tag}_y_in', allgather(y.cuda()), hps)
-    else:
-        zs_in = orig_model.encode(x_in, start_level=0, bs_chunks=bs)
-        x_ds = [orig_model.decode(zs_in[level:], start_level=level, bs_chunks=bs) for level in range(0, hps.levels)]
-        for i in range(len(x_ds)):
-            log_aud(logger, f'{tag}_x_ds_start_{i}', x_ds[i], hps)
     logger.flush()
 
 def sample_prior(orig_model, ema, logger, x_in, y, hps):
@@ -172,12 +154,12 @@ def evaluate(model, orig_model, logger, metrics, data_processor, hps):
 
             x_in = x = audio_preprocess(x, hps)
             log_input_output = (i==0)
-
+            
+            
             if hps.prior:
-                kl_weight = hps.start_kl_weight + hps.delta_kl_weight*i/len(data_processor.test_loader)
-                forw_kwargs = dict(y=y, kl_weight=kl_weight, decode=log_input_output, hps=hps)
+                forw_kwargs = dict(y=y, fp16=hps.fp16, decode=log_input_output)
             else:
-                forw_kwargs = dict(loss_fn=hps.loss_fn, hps=hps)
+                forw_kwargs = dict(global_step=global_step, args=hps)
 
             x_out, loss, _metrics = model(x, **forw_kwargs)
 
@@ -208,7 +190,7 @@ def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_proces
     if hps.prior:
         _print_keys = dict(l="loss", bpd="bpd", kl_loss="kl_loss")
     else:
-        _print_keys = dict(l="loss", sl="spectral_loss", rl="recons_loss", e="entropy", u="usage", uc="used_curr", gn="gn", pn="pn", dk="dk")
+        _print_keys = dict(l="loss", rl="recon_loss", gn="gn", bn_loss ="bn_loss", norm_loss="norm_loss", wdn_coeff="wdn_coeff", kl_all="kl_all", kl_coeff="kl_coeff")
 
     for i, x in logger.get_range(data_processor.train_loader):
         if isinstance(x, (tuple, list)):
@@ -224,10 +206,9 @@ def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_proces
         log_input_output = (logger.iters % hps.save_iters == 0)
 
         if hps.prior:
-            kl_weight = hps.start_kl_weight + hps.delta_kl_weight*i/len(data_processor.train_loader)
-            forw_kwargs = dict(y=y, kl_weight=kl_weight, decode=log_input_output, hps=hps)
+            forw_kwargs = dict(y=y, fp16=hps.fp16, decode=log_input_output)
         else:
-            forw_kwargs = dict(loss_fn=hps.loss_fn, hps=hps)
+            forw_kwargs = dict(global_step=global_step, args=hps)
 
         # Forward
         x_out, loss, _metrics = model(x, **forw_kwargs)
@@ -304,6 +285,8 @@ def run(hps="teeny", port=29500, **kwargs):
 
     # Setup dataset
     data_processor = DataProcessor(hps)
+    global_step=0
+    hps.num_total_iter = len(data_processor.train_loader) * hps.epochs
 
     # Setup models
     vqvae = make_vqvae(hps, device)
@@ -327,15 +310,11 @@ def run(hps="teeny", port=29500, **kwargs):
     for epoch in range(hps.curr_epoch, hps.epochs):
         metrics.reset()
         data_processor.set_epoch(epoch)
+        if epoch > hps.warmup_epochs:
+            shd.step()
         if hps.train:
 
-            if hps.prior:
-                last_kl_weight, _ = get_kl_weight(hps, epoch-1)
-                cur_kl_weight, done = get_kl_weight(hps, epoch)
-                hps.start_kl_weight = last_kl_weight
-                hps.delta_kl_weight = cur_kl_weight-last_kl_weight
-
-            train_metrics = train(distributed_model, model, opt, shd, scalar, ema, logger, metrics, data_processor, hps)
+            train_metrics = train(distributed_model, model, global_step, opt, shd, scalar, ema, logger, metrics, data_processor, hps)
             train_metrics['epoch'] = epoch
             if rank == 0:
                 print('Train',' '.join([f'{key}: {val:0.4f}' for key,val in train_metrics.items()]))
