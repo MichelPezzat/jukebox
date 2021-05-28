@@ -11,9 +11,11 @@ import torch.nn.functional as F
 
 from thirdparty.swish import Swish as SwishFN
 from thirdparty.inplaced_sync_batchnorm import SyncBatchNormSwish
+from thirdparty.linear import Linear
 
 from utils import average_tensor
 from collections import OrderedDict
+from thirdparty.checkpoint import checkpoint
 import thirdparty.dist_adapter as dist
 
 
@@ -21,14 +23,14 @@ BN_EPS = 1e-5
 SYNC_BN = True
 
 OPS = OrderedDict([
-    ('res_elu', lambda Cin, Cout, stride: ELUConv(Cin, Cout, 3, stride, 1)),
-    ('res_bnelu', lambda Cin, Cout, stride: BNELUConv(Cin, Cout, 3, stride, 1)),
-    ('res_bnswish', lambda Cin, Cout, stride: BNSwishConv(Cin, Cout, 3, stride, 1)),
-    ('res_bnswish5', lambda Cin, Cout, stride: BNSwishConv(Cin, Cout, 3, stride, 2, 2)),
-    ('mconv_e6k5g0', lambda Cin, Cout, stride: InvertedResidual(Cin, Cout, stride, ex=6, dil=1, k=5, g=0)),
-    ('mconv_e3k5g0', lambda Cin, Cout, stride: InvertedResidual(Cin, Cout, stride, ex=3, dil=1, k=5, g=0)),
-    ('mconv_e3k5g8', lambda Cin, Cout, stride: InvertedResidual(Cin, Cout, stride, ex=3, dil=1, k=5, g=8)),
-    ('mconv_e6k11g0', lambda Cin, Cout, stride: InvertedResidual(Cin, Cout, stride, ex=6, dil=1, k=11, g=0)),
+    ('res_elu', lambda Cin, Cout, stride,checkpoint_res: ELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
+    ('res_bnelu', lambda Cin, Cout, stride,checkpoint_res: BNELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
+    ('res_bnswish', lambda Cin, Cout, stride,checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
+    ('res_bnswish5', lambda Cin, Cout, stride,checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, 2, 2,checkpoint_res)),
+    ('mconv_e6k5g0', lambda Cin, Cout, stride,checkpoint_res: InvertedResidual(Cin, Cout, stride, ex=6, dil=1, k=5, g=0,checkpoint_res=checkpoint_res)),
+    ('mconv_e3k5g0', lambda Cin, Cout, stride,checkpoint_res: InvertedResidual(Cin, Cout, stride, ex=3, dil=1, k=5, g=0,checkpoint_res=checkpoint_res)),
+    ('mconv_e3k5g8', lambda Cin, Cout, stride,checkpoint_res: InvertedResidual(Cin, Cout, stride, ex=3, dil=1, k=5, g=8,checkpoint_res=checkpoint_res)),
+    ('mconv_e6k11g0', lambda Cin, Cout, stride,checkpoint_res: InvertedResidual(Cin, Cout, stride, ex=6, dil=1, k=11, g=0,checkpoint_res=checkpoint_res)),
 ])
 
 
@@ -93,13 +95,11 @@ class Conv1D(nn.Conv1d):
             use_shared (bool): Use weights for this layer or not?
         """
         super(Conv1D, self).__init__(C_in, C_out, kernel_size, stride, padding, dilation, groups, bias)
-        print(self.weight.type(), self.bias.type()) 
 
         self.log_weight_norm = None
         if weight_norm:
             init = norm(self.weight, dim=[1, 2]).view(-1, 1, 1)
             self.log_weight_norm = nn.Parameter(torch.log(init + 1e-2), requires_grad=True)
-          
 
         self.data_init = data_init
         self.init_done = False
@@ -116,7 +116,7 @@ class Conv1D(nn.Conv1d):
             with torch.no_grad():
                 weight = self.weight / (norm(self.weight, dim=[1, 2]).view(-1, 1, 1) + 1e-5)
                 bias = None
-                out = F.conv1d(x, weight, bias, self.stride, self.padding, self.dilation, self.groups)
+                out = F.conv1d(x, weight.type_as(x), bias.type_as(x), self.stride, self.padding, self.dilation, self.groups)
                 mn = torch.mean(out, dim=[0, 2])
                 st = 5 * torch.std(out, dim=[0, 2])
 
@@ -132,7 +132,7 @@ class Conv1D(nn.Conv1d):
         self.weight_normalized = self.normalize_weight()
 
         bias = self.bias
-        return F.conv1d(x, self.weight_normalized, bias, self.stride,
+        return F.conv1d(x, self.weight_normalized.type_as(x), bias.type_as(x) if bias!=None else bias, self.stride,
                         self.padding, self.dilation, self.groups)
 
     def normalize_weight(self):
@@ -209,9 +209,10 @@ class BNELUConv(nn.Module):
 class BNSwishConv(nn.Module):
     """ReLU + Conv2d + BN."""
 
-    def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1):
+    def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1,checkpoint_res=False):
         super(BNSwishConv, self).__init__()
         self.upsample = stride == -1
+        self.checkpoint_res = checkpoint_res
         stride = abs(stride)
         self.bn_act = SyncBatchNormSwish(C_in, eps=BN_EPS, momentum=0.05)
         self.conv_0 = Conv1D(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=True, dilation=dilation)
@@ -221,10 +222,17 @@ class BNSwishConv(nn.Module):
         Args:
             x (torch.Tensor): of size (B, C_in, H, W)
         """
-        out = self.bn_act(x)
+        if self.checkpoint_res == 1 and not sample:
+            out = checkpoint(self.bn_act, (x, ), self.bn_act.parameters(), True)
+        else:
+            out = self.bn_act(x)
         if self.upsample:
             out = F.interpolate(out, scale_factor=2, mode='nearest')
-        out = self.conv_0(out)
+        if self.checkpoint_res == 1 and not sample:
+            out = checkpoint(self.conv_0, (out, ), self.conv_0.parameters(), True) 
+        else:
+            out = self.conv_0(out)
+        
         return out
 
 
@@ -280,25 +288,35 @@ class DecCombinerCell(nn.Module):
 
 
 class ConvBNSwish(nn.Module):
-    def __init__(self, Cin, Cout, k=3, stride=1, groups=1, dilation=1):
+    def __init__(self, Cin, Cout, k=3, stride=1, groups=1, dilation=1,checkpoint_res=False):
         padding = dilation * (k - 1) // 2
         super(ConvBNSwish, self).__init__()
        
         conv =  [Conv1D(Cin, Cout, k, stride, padding, groups=groups, bias=False, dilation=dilation, weight_norm=False),
             SyncBatchNormSwish(Cout, eps=BN_EPS, momentum=0.05) ] # drop in replacement for BN + Swish*
-        
-        self.conv = nn.Sequential(*conv)
+        self.checkpoint_res = checkpoint_res
+        if self.checkpoint_res == 1:
+            if dist.get_rank() == 0:
+                print("Checkpointing convs")
+            self.conv = nn.ModuleList(conv)
+        else:
+            self.conv = nn.Sequential(*conv)
 
-    def forward(self, x):
-        return self.conv(x)
+    def forward(self, x, sample=False):
+        if self.checkpoint_res == 1 and not sample:
+            for layer in self.conv:
+                x = checkpoint(layer, (x, ), layer.parameters(), True)
+            return x
+        else:
+            return self.conv(x)
 
 
 class SE(nn.Module):
     def __init__(self, Cin, Cout):
         super(SE, self).__init__()
         num_hidden = max(Cout // 16, 4)
-        self.se = nn.Sequential(nn.Linear(Cin, num_hidden), nn.ReLU(inplace=True),
-                                nn.Linear(num_hidden, Cout), nn.Sigmoid())
+        self.se = nn.Sequential(Linear(Cin, num_hidden), nn.ReLU(inplace=True),
+                                Linear(num_hidden, Cout), nn.Sigmoid())
 
     def forward(self, x):
         se = torch.mean(x, dim=2)
@@ -309,7 +327,7 @@ class SE(nn.Module):
 
 
 class InvertedResidual(nn.Module):
-    def __init__(self, Cin, Cout, stride, ex, dil, k, g, checkpoint_res =False):
+    def __init__(self, Cin, Cout, stride, ex, dil, k, g, checkpoint_res=False):
         super(InvertedResidual, self).__init__()
         self.stride = stride
         assert stride in [1, 2, -1]
@@ -322,25 +340,24 @@ class InvertedResidual(nn.Module):
 
         layers0 = [Upsampling1D(scale_factor=2)] if self.upsample else []
         layers = [get_batchnorm(Cin, eps=BN_EPS, momentum=0.05),
-                  ConvBNSwish(Cin, hidden_dim, k=1),
-                  ConvBNSwish(hidden_dim, hidden_dim, stride=self.stride, groups=groups, k=k, dilation=dil),
+                  ConvBNSwish(Cin, hidden_dim, k=1, checkpoint_res=checkpoint_res),
+                  ConvBNSwish(hidden_dim, hidden_dim, stride=self.stride, groups=groups, k=k, dilation=dil, checkpoint_res=checkpoint_res),
                   Conv1D(hidden_dim, Cout, 1, 1, 0, bias=False, weight_norm=False),
                   get_batchnorm(Cout, momentum=0.05)]
 
         layers0.extend(layers)
         self.checkpoint_res = checkpoint_res
-        if self.checkpoint_res == 1:
-            if dist.get_rank() == 0:
-                print("Checkpointing convs")
-            self.conv = nn.ModuleList(laters0)
-        else:
-            self.conv = nn.Sequential(*layers0)
+        
+        self.conv = nn.ModuleList(layers0)
+
             
             
     def forward(self, x, sample=False):
         if self.checkpoint_res == 1 and not sample:
             for layers in self.conv:
-                x = checkpoint(layers, (x, ), block.parameters(), True)
+                x = checkpoint(layers, (x, ), layers.parameters(), True)
             return x
         else:
-            return self.conv(x)
+            for layers in self.conv:
+                x = self.layers(x)
+            return x
