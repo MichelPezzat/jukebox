@@ -103,13 +103,13 @@ HPARAMS_REGISTRY["upsampler_level_1"] = upsampler_level_1
 prior_5b = Hyperparams(
     level=2,
     n_ctx=8192,
-    n_flow=8,  # number of flows in WaveFlow
-    n_layers=8,  # number of conv block in each flow
-    n_group=16,  # folding factor of audio and spectrogram
-    channels=128,  # resiaudal channel in each flow
-    kernel_size=[3, 3],
-    n_mels=80,  # kernel size in each conv block
-    sigma=1.0,
+    prior_width=4800,
+    prior_depth=72,
+    heads=8,
+    attn_order=2,
+    blocks=128,
+    init_scale=0.1,
+    c_res=1,
     beta2=0.925,
     min_duration=60.0,
     max_duration=600.0,
@@ -207,22 +207,46 @@ small_vqvae = Hyperparams(
 )
 HPARAMS_REGISTRY["small_vqvae"] = small_vqvae
 
-small_prior = Hyperparams(
-    level=2,
-    n_ctx=8192,
-    res_channels=64,
-    n_height = 16,
-    cin_channels=1,
-    n_layer = 8,
-    n_flow = 8,
-    n_layer_per_cycle = 1,
+small_nvae = Hyperparams(
+    weight_decay=3e-4,
+    weight_decay_norm=1e-1,
+    weight_decay_norm_init=1.,
+    weight_decay_norm_anneal=True,
+    kl_anneal_portion=0.3,
+    kl_const_portion=0.0001,
+    kl_const_coeff=0.0001,
+    num_nf=2,
+    num_latent_scales=1,
+    num_groups_per_scale=2,
+    num_latent_per_group=20,
+    ada_groups=True,
+    min_groups_per_scale=1,
+    num_channels_enc=16,
+    num_preprocess_blocks=2,
+    num_preprocess_cells=3,
+    num_cell_per_cond_enc=1,
+    num_channels_dec=16,
+    num_postprocess_blocks=2,
+    num_postprocess_cells=3,
+    num_cell_per_cond_dec=1,
+    use_se=True,
+    res_dist=True,
+    cont_training=False,
     c_res=1,
-    sigma=1.0,
-    upsample_factor=[16,16]
+
 )
+HPARAMS_REGISTRY["small_nvae"] = small_nvae
 
-
-
+small_prior = Hyperparams(
+    n_ctx=8192,
+    prior_width=1024,
+    prior_depth=48,
+    heads=1,
+    c_res=1,
+    attn_order=2,
+    blocks=64,
+    init_scale=0.7,
+)
 HPARAMS_REGISTRY["small_prior"] = small_prior
 
 small_labelled_prior = Hyperparams(
@@ -408,6 +432,7 @@ DEFAULTS["prior"] = Hyperparams(
     restore_prior_ddp=False,
     max_bow_genre_size=None,
     y_bins=0,
+    level=0,
     cond_levels=None,
     t_bins=64,
     y_cond_as_bias=False,
@@ -418,34 +443,8 @@ DEFAULTS["prior"] = Hyperparams(
     alignment_head=None,
 )
 
-DEFAULTS["discrete_flow"] = Hyperparams(
-    level=2,
-    n_ctx= 2048,
-    p_rnn_layers = 1,
-    p_rnn_units = 128,
-    p_num_flow_layers = 1,
-    nohiddenflow = False,
-    hiddenflow_layers = 1,
-    hiddenflow_units = 64,
-    hiddenflow_flow_layers = 3,
-    hiddenflow_scf_layers = True,
-    transform_function = 'affine',
-    inp_embedding_size = 128,
-    hidden_size = 128,
-    zsize = 50,
-    dropout_p = 0.2,
-    dlocs = ['prior_rnn'],
-    prior_type = 'IAF',
-    gen_bilstm_layers = 1,
-    q_rnn_layers = 1,
-    notie_weights = True,
-    indep_bernoulli = False,
-    ELBO_samples = 10,
-    kl_rampup_time = 10,
-    initial_kl_zero = 4,
-)
-
 DEFAULTS["prior_attn_block"] = Hyperparams(
+    n_ctx=1024,
     prior_depth=3,
     prior_width=128,
     heads=1,
@@ -484,6 +483,43 @@ DEFAULTS["sample"] = Hyperparams(
     temp_rest=0.99,
     sample_length_in_seconds=24,
     total_sample_length_in_seconds=240,
+)
+
+DEFAULTS["nvae"] = Hyperparams(
+    weight_decay=3e-4,
+    weight_decay_norm=0.,
+    weight_decay_norm_init=10.,
+    weight_decay_norm_anneal=False,
+    kl_anneal_portion=0.3,
+    kl_const_portion=0.0001,
+    kl_const_coeff=0.0001,
+    num_nf=0,
+    num_latent_scales=1,
+    num_groups_per_scale=10,
+    num_latent_per_group=20,
+    ada_groups=False,
+    min_groups_per_scale=1,
+    num_channels_enc=32,
+    num_preprocess_blocks=2,
+    num_preprocess_cells=3,
+    num_cell_per_cond_enc=1,
+    num_channels_dec=32,
+    num_postprocess_blocks=2,
+    num_postprocess_cells=3,
+    num_cell_per_cond_dec=1,
+    use_se=False,
+    res_dist=False,
+    cont_training=False,
+    num_x_bits=32,
+    normal_enc=['res_bnswish', 'res_bnswish'],
+    down_enc=['res_bnswish', 'res_bnswish'],
+    normal_dec=['mconv_e6k5g0'],
+    up_dec=['mconv_e6k5g0'],
+    normal_pre=['res_bnswish', 'res_bnswish'],
+    down_pre=['res_bnswish', 'res_bnswish'],
+    normal_post=['mconv_e3k5g0'],
+    up_post=['mconv_e3k5g0'],
+    ar_nn=[''],
 )
 
 DEFAULTS["prime"] = Hyperparams(
@@ -527,9 +563,11 @@ DEFAULTS["opt"] = Hyperparams(
     lr_decay=10000000000.0,
     lr_gamma=1.0,
     lr_scale=1.0,
-    lr_use_linear_decay=False,
+    lr_use_linear_decay=True,
     lr_start_linear_decay=0,
     lr_use_cosine_decay=False,
+    learning_rate_min=0.0001,
+    warmup_epochs=5,
 )
 
 DEFAULTS["fp16"] = Hyperparams(
