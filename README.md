@@ -41,8 +41,8 @@ Yet to be done
 ## NVAE
 To train a small nvae, run
 ```
-mpiexec -n 1 python jukebox/train.py --hps=small_nvae,all_fp16 --name=small_nvae --sample_length=262144 \
---bs=2 --audio_files_dir="RubenBladesSamples" --labels=False --train --aug_shift --aug_blend  \
+mpiexec -n 1 python jukebox/train.py --hps=small_nvae,all_fp16 --name=small_nvae --sample_length=262144 
+--bs=2 --audio_files_dir="RubenBladesSamples" --labels=False --train --aug_shift --aug_blend  
 --save_iters=1000 --sr=44100 --epochs=200
 
 ```
