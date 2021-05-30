@@ -9,14 +9,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from thirdparty.swish import Swish as SwishFN
-from thirdparty.inplaced_sync_batchnorm import SyncBatchNormSwish
-from thirdparty.linear import Linear
+from jukebox.NVAE.thirdparty.swish import Swish as SwishFN
+from jukebox.NVAE.thirdparty.inplaced_sync_batchnorm import SyncBatchNormSwish
+from jukebox.NVAE.thirdparty.linear import Linear
 
-from utils import average_tensor
+from jukebox.NVAE.utils import average_tensor
 from collections import OrderedDict
-from thirdparty.checkpoint import checkpoint
-import thirdparty.dist_adapter as dist
+from jukebox.NVAE.thirdparty.checkpoint import checkpoint
+import jukebox.NVAE.thirdparty.dist_adapter as dist
 
 
 BN_EPS = 1e-5
@@ -98,8 +98,10 @@ class Conv1D(nn.Conv1d):
 
         self.log_weight_norm = None
         if weight_norm:
-            init = norm(self.weight, dim=[1, 2]).view(-1, 1, 1)
+            init = norm(self.weight.data, dim=[1, 2]).view(-1, 1, 1)
             self.log_weight_norm = nn.Parameter(torch.log(init + 1e-2), requires_grad=True)
+            
+            
 
         self.data_init = data_init
         self.init_done = False
