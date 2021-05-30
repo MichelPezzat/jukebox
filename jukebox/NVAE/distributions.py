@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from utils import one_hot
+from jukebox.NVAE.utils import to_one_hot
 
 @torch.jit.script
 def soft_clamp5(x: torch.Tensor):
@@ -100,7 +100,7 @@ class DiscMixLogistic:
         
         assert param.dim() == 3
         assert param.size(1) % 3 == 0
-        num_mix = y_hat.size(1) // 3
+        num_mix = param.size(1) // 3
         
         param = param.transpose(1, 2)
         self.num_mix = num_mix
@@ -120,9 +120,9 @@ class DiscMixLogistic:
 
         centered = samples - self.means                          # B, 3, M, H, W
         inv_stdv = torch.exp(-self.log_scales)
-        plus_in = inv_stdv * (centered + 1. / (num_classes - 1))
+        plus_in = inv_stdv * (centered + 1. / (self.max_val - 1))
         cdf_plus = F.sigmoid(plus_in)
-        min_in = inv_stdv * (centered - 1. / (num_classes - 1))
+        min_in = inv_stdv * (centered - 1. / (self.max_val - 1))
         cdf_min = F.sigmoid(min_in)
         
         log_cdf_plus = plus_in - F.softplus(plus_in)
@@ -134,7 +134,7 @@ class DiscMixLogistic:
         mid_in = inv_stdv * centered
         # log probability in the center of the bin, to be used in extreme cases
         # (not actually used in our code)
-        log_pdf_mid = mid_in - log_scales - 2. * F.softplus(mid_in)    # tf equivalent
+        log_pdf_mid = mid_in - self.log_scales - 2. * F.softplus(mid_in)    # tf equivalent
         """
         log_probs = tf.where(x < -0.999, log_cdf_plus,
                          tf.where(x > 0.999, log_one_minus_cdf_min,
@@ -147,7 +147,7 @@ class DiscMixLogistic:
         inner_inner_cond = (cdf_delta > 1e-5).float()
         inner_inner_out = inner_inner_cond * \
              torch.log(torch.clamp(cdf_delta, min=1e-12)) + \
-                 (1. - inner_inner_cond) * (log_pdf_mid - np.log((num_classes - 1) / 2))
+                 (1. - inner_inner_cond) * (log_pdf_mid - np.log((self.max_val - 1) / 2))
         inner_cond = (samples > 0.999).float()
         inner_out = inner_cond * log_one_minus_cdf_min + (1. - inner_cond) * inner_inner_out
         cond = (samples < -0.999).float()
@@ -155,24 +155,27 @@ class DiscMixLogistic:
 
         log_probs = log_probs + F.log_softmax(self.logit_probs, -1)  
         
-        return torch.logsumexp(log_probs)                                      # B, H, W
+        return torch.logsumexp(log_probs,-1)                                      # B, H, W
 
     def sample(self, t=1.):
-        gumbel = -torch.log(- torch.log(torch.Tensor(self.logit_probs.size()).uniform_(1e-5, 1. - 1e-5).cuda()))  # B, M, H, W
-        sel = one_hot(torch.argmax(self.logit_probs / t + gumbel, 1), self.num_mix, dim=1)          # B, M, H, W
-        sel = sel.unsqueeze(1)                                                                 # B, 1, M, H, W
+        temp = self.logit_probs.data.new(self.logit_probs.size()).uniform_(1e-5, 1.0 - 1e-5)  # B, M, H, W
+        temp = self.logit_probs.data / t - torch.log(- torch.log(temp))
+        _, argmax = temp.max(dim=-1)
+        
+        one_hot = to_one_hot(argmax, self.num_mix)
 
         # select logistic parameters
-        means = torch.sum(self.means * sel, dim=2)                                             # B, 3, H, W
-        log_scales = torch.sum(self.log_scales * sel, dim=2)                                   # B, 3, H, W
-        coeffs = torch.sum(self.coeffs * sel, dim=2)                                           # B, 3, H, W
+        means = torch.sum(self.means * one_hot, dim=-1)                                             # B, 3, H, W
+        log_scales = torch.sum(self.log_scales * one_hot, dim=-1)                                   # B, 3, H, W
+                                                
 
         # cells from logistic & clip to interval
         # we don't actually round to the nearest 8bit value when sampling
         u = torch.Tensor(means.size()).uniform_(1e-5, 1. - 1e-5).cuda()                        # B, 3, H, W
-        x = means + torch.exp(log_scales) / t * (torch.log(u) - torch.log(1. - u))             # B, 3, H, W
+        x = means + torch.exp(log_scales) / t * (torch.log(u) - torch.log(1. - u))  
+        
+        x = x.unsqueeze(1)
+                 # B, 3, H, W
 
-        x0 = torch.clamp(x[:, 0, :], -1, 1.)                                                # B, H, W
 
         return x
-
