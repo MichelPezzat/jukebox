@@ -71,7 +71,7 @@ def restore_opt(opt, shd, checkpoint_path):
         shd.step(checkpoint['step'])
 
 def make_nvae(hps, device='cuda'):
-    from NVAE.model import AutoEncoder
+    from jukebox.NVAE.model import AutoEncoder
 
     vae_kwargs = dict(sample_length=hps.sample_length,num_nf=hps.num_nf, 
                 num_cell_per_cond_enc=hps.num_cell_per_cond_enc,num_cell_per_cond_dec=hps.num_cell_per_cond_dec,
@@ -94,8 +94,8 @@ def make_nvae(hps, device='cuda'):
     restore_model(hps, nvae, hps.restore_vqvae)
     if hps.fp16_params:
         print_all("Converting to fp16 params")
-        from NVAE.neural_operations import _convert_conv_weights_to_fp16
-        from NVAE.neural_ar_operations import _convert_arconv_weights_to_fp16
+        from jukebox.NVAE.neural_operations import _convert_conv_weights_to_fp16
+        from jukebox.NVAE.neural_ar_operations import _convert_arconv_weights_to_fp16
         nvae.apply(_convert_conv_weights_to_fp16)
         nvae.apply(_convert_arconv_weights_to_fp16)
 
