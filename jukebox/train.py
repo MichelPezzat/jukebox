@@ -12,7 +12,7 @@ import jukebox.utils.dist_adapter as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from jukebox.hparams import setup_hparams
-from jukebox.make_models import make_vqvae, make_prior, restore_opt, save_checkpoint
+from jukebox.make_models import make_nvae, make_prior, restore_opt, save_checkpoint
 from jukebox.utils.logger import init_logging
 from jukebox.utils.audio_utils import audio_preprocess, audio_postprocess
 from jukebox.utils.torch_utils import zero_grad, count_parameters
@@ -20,7 +20,7 @@ from jukebox.utils.dist_utils import print_once, allreduce, allgather
 from jukebox.utils.ema import CPUEMA, FusedEMA, EMA
 from jukebox.utils.fp16 import FP16FusedAdam, FusedAdam, LossScalar, clipped_grad_scale, backward
 from jukebox.data.data_processor import DataProcessor
-from jukebox.discrete_flow.utils import get_kl_weight
+
 
 def prepare_aud(x, hps):
     x = audio_postprocess(x.detach().contiguous(), hps)
@@ -92,7 +92,7 @@ def get_optimizer(model, hps):
 
 def log_inputs(orig_model, logger, x_in, y, x_out, hps, tag="train"):
     print(f"Logging {tag} inputs/ouputs")
-    x_ds = orig_model.post_process(x_out.sample())
+    x_ds = x_out.sample().permute(0,2,1)
     log_aud(logger, f'{tag}_x_in', x_in, hps)
     log_aud(logger, f'{tag}_x_out', x_ds, hps)
     bs = x_in.shape[0]
@@ -184,7 +184,7 @@ def evaluate(model, orig_model, logger, metrics, data_processor, hps):
     logger.close_range()
     return {key: metrics.avg(f"test_{key}") for key in _metrics.keys()}
 
-def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_processor, hps):
+def train(model, orig_model, global_step, opt, shd, scalar, ema, logger, metrics, data_processor, hps):
     model.train()
     orig_model.train()
     if hps.prior:
@@ -289,14 +289,14 @@ def run(hps="teeny", port=29500, **kwargs):
     hps.num_total_iter = len(data_processor.train_loader) * hps.epochs
 
     # Setup models
-    vqvae = make_vqvae(hps, device)
-    print_once(f"Parameters VQVAE:{count_parameters(vqvae)}")
+    nvae = make_nvae(hps, device)
+    print_once(f"Parameters NVAE:{count_parameters(nvae)}")
     if hps.prior:
         prior = make_prior(hps, vqvae, device)
         print_once(f"Parameters Prior:{count_parameters(prior)}")
         model = prior
     else:
-        model = vqvae
+        model = nvae
 
     # Setup opt, ema and distributed_model.
     opt, shd, scalar = get_optimizer(model, hps)
