@@ -11,15 +11,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from neural_operations import OPS, EncCombinerCell, DecCombinerCell, Conv1D, get_skip_connection, SE
-from neural_ar_operations import ARConv1D, ARInvertedResidual, MixLogCDFParam, mix_log_cdf_flow
-from neural_ar_operations import ELUConv as ARELUConv
+from jukebox.NVAE.neural_operations import OPS, EncCombinerCell, DecCombinerCell, Conv1D, get_skip_connection, SE
+from jukebox.NVAE.neural_ar_operations import ARConv1D, ARInvertedResidual, MixLogCDFParam, mix_log_cdf_flow
+from jukebox.NVAE.neural_ar_operations import ELUConv as ARELUConv
 from torch.distributions.bernoulli import Bernoulli
-import utils
-from utils import get_stride_for_cell_type, get_input_size, groups_per_scale
-from audio_utils import spectral_convergence, spectral_loss, multispectral_loss, audio_postprocess
-from distributions import Normal, DiscMixLogistic
-from thirdparty.inplaced_sync_batchnorm import SyncBatchNormSwish
+import jukebox.NVAE.utils as utils
+from jukebox.NVAE.utils import get_stride_for_cell_type, get_input_size, groups_per_scale
+from jukebox.NVAE.distributions import Normal, DiscMixLogistic
+from jukebox.NVAE.thirdparty.inplaced_sync_batchnorm import SyncBatchNormSwish
 
 CHANNEL_MULT = 2
 
@@ -490,12 +489,14 @@ class AutoEncoder(nn.Module):
         
         kl_coeff = utils.kl_coeff(global_step, args.kl_anneal_portion * args.num_total_iter,
                                       args.kl_const_portion * args.num_total_iter, args.kl_const_coeff)
-        recon_loss = utils.reconstruction_loss(output, x_in)
+                                      
+
+        recon_loss = utils.reconstruction_loss(output, x)
         balanced_kl, kl_coeffs, kl_vals = utils.kl_balancer(kl_all, kl_coeff, kl_balance=True, alpha_i=alpha_i)
         
         nelbo_batch = recon_loss + balanced_kl
         
-        
+        loss = torch.mean(nelbo_batch)
         bn_loss = self.batchnorm_loss()
         norm_loss = self.spectral_norm_parallel()
         
@@ -512,11 +513,11 @@ class AutoEncoder(nn.Module):
         else:
             wdn_coeff = args.weight_decay_norm
 
-        loss = torch.mean(nelbo_batch) + norm_loss * wdn_coeff + bn_loss * wdn_coeff 
+        loss +=  norm_loss * wdn_coeff + bn_loss * wdn_coeff 
         
         
         metrics.update(dict(
-            recon_loss=recon_loss,
+            recon_loss=torch.mean(recon_loss),
             bn_loss =bn_loss,
             norm_loss=norm_loss,
             wdn_coeff=torch.tensor(wdn_coeff),

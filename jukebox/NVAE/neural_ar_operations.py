@@ -11,9 +11,9 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 from collections import OrderedDict
-from neural_operations import ConvBNSwish, normalize_weight_jit
-import thirdparty.dist_adapter as dist
-from thirdparty.checkpoint import checkpoint
+from jukebox.NVAE.neural_operations import ConvBNSwish, normalize_weight_jit
+import jukebox.NVAE.thirdparty.dist_adapter as dist
+from jukebox.NVAE.thirdparty.checkpoint import checkpoint
 
 AROPS = OrderedDict([
     ('conv_3x3', lambda C, masked, zero_diag: ELUConv(C, C, 3, 1, 1, masked=masked, zero_diag=zero_diag))
@@ -96,7 +96,8 @@ class ARConv1D(nn.Conv1d):
  
 
         # init weight normalizaition parameters
-        init = torch.log(norm(self.weight, dim=[1, 2]).view(-1, 1, 1) + 1e-2)
+        
+        init = torch.log(norm(self.weight.data, dim=[1, 2]).view(-1, 1, 1) + 1e-2)
         self.log_weight_norm = nn.Parameter(init, requires_grad=True)
         self.weight_normalized = None
 
@@ -157,10 +158,10 @@ class ARInvertedResidual(nn.Module):
         padding = dil * (k - 1) // 2
         layers = []
         layers.extend([ARConv1D(inz, hidden_dim, kernel_size=3, padding=1,mode=mode,causal=True),
-                       nn.ELU(inplace=True)])
+                       nn.ELU()])
         layers.extend([ARConv1D(hidden_dim, hidden_dim, groups=hidden_dim, kernel_size=k, padding=padding, dilation=dil,
                                         causal=True, mode=mode),
-                      nn.ELU(inplace=True)])
+                      nn.ELU()])
         self.checkpoint_res = checkpoint_res
         if self.checkpoint_res == 1:
             if dist.get_rank() == 0:

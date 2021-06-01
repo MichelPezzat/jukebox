@@ -40,7 +40,7 @@ def backward(loss, params, scalar, fp16, logger):
     # Perform backward
     if not fp16:
         scale = 1.0
-        loss.backward()
+        scalar.scale(loss).backward()
         gn = grad_norm(params, scale)
         return loss, scale, gn, False, False
     else:

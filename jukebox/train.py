@@ -10,9 +10,10 @@ import numpy as np
 import torch as t
 import jukebox.utils.dist_adapter as dist
 from torch.nn.parallel import DistributedDataParallel
+from torch.cuda.amp import autocast, GradScaler
 
 from jukebox.hparams import setup_hparams
-from jukebox.make_models import make_vqvae, make_prior, restore_opt, save_checkpoint
+from jukebox.make_models import make_nvae, make_prior, restore_opt, save_checkpoint
 from jukebox.utils.logger import init_logging
 from jukebox.utils.audio_utils import audio_preprocess, audio_postprocess
 from jukebox.utils.torch_utils import zero_grad, count_parameters
@@ -20,7 +21,9 @@ from jukebox.utils.dist_utils import print_once, allreduce, allgather
 from jukebox.utils.ema import CPUEMA, FusedEMA, EMA
 from jukebox.utils.fp16 import FP16FusedAdam, FusedAdam, LossScalar, clipped_grad_scale, backward
 from jukebox.data.data_processor import DataProcessor
-from jukebox.discrete_flow.utils import get_kl_weight
+from jukebox.NVAE.thirdparty.adamax import Adamax
+
+
 
 def prepare_aud(x, hps):
     x = audio_postprocess(x.detach().contiguous(), hps)
@@ -69,7 +72,9 @@ def get_optimizer(model, hps):
     if hps.fp16_opt:
         opt = FP16FusedAdam(model.parameters(), lr=hps.lr, weight_decay=hps.weight_decay, betas=betas, eps=hps.eps)
     else:
-        opt = FusedAdam(model.parameters(), lr=hps.lr, weight_decay=hps.weight_decay, betas=betas, eps=hps.eps)
+        opt = Adamax(model.parameters(), hps.lr,
+                               weight_decay=hps.weight_decay, eps=1e-3)
+        
 
     # lr scheduler
     if hps.lr_use_linear_decay:
@@ -80,7 +85,7 @@ def get_optimizer(model, hps):
     restore_opt(opt, shd, restore_path)
 
     # fp16 dynamic loss scaler
-    scalar = None
+    scalar =  GradScaler(2**10)
     if hps.fp16:
         rank = dist.get_rank()
         local_rank = rank % 8
@@ -92,7 +97,7 @@ def get_optimizer(model, hps):
 
 def log_inputs(orig_model, logger, x_in, y, x_out, hps, tag="train"):
     print(f"Logging {tag} inputs/ouputs")
-    x_ds = orig_model.post_process(x_out.sample())
+    x_ds = x_out.sample().permute(0,2,1)
     log_aud(logger, f'{tag}_x_in', x_in, hps)
     log_aud(logger, f'{tag}_x_out', x_ds, hps)
     bs = x_in.shape[0]
@@ -184,7 +189,7 @@ def evaluate(model, orig_model, logger, metrics, data_processor, hps):
     logger.close_range()
     return {key: metrics.avg(f"test_{key}") for key in _metrics.keys()}
 
-def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_processor, hps):
+def train(model, orig_model, global_step, warmup_iters,opt, shd, scalar, ema, logger, metrics, data_processor, hps):
     model.train()
     orig_model.train()
     if hps.prior:
@@ -204,14 +209,22 @@ def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_proces
 
         x_in = x = audio_preprocess(x, hps)
         log_input_output = (logger.iters % hps.save_iters == 0)
+        
+        if global_step < warmup_iters:
+            lr = hps.lr * float(global_step) / warmup_iters
+            for param_group in cnn_optimizer.param_groups:
+                param_group['lr'] = lr
 
         if hps.prior:
             forw_kwargs = dict(y=y, fp16=hps.fp16, decode=log_input_output)
         else:
             forw_kwargs = dict(global_step=global_step, args=hps)
+        
+        opt.zero_grad()
 
         # Forward
-        x_out, loss, _metrics = model(x, **forw_kwargs)
+        with autocast():
+            x_out, loss, _metrics = model(x, **forw_kwargs)
 
         # Backward
         loss, scale, grad_norm, overflow_loss, overflow_grad = backward(loss=loss, params=list(model.parameters()),
@@ -224,13 +237,11 @@ def train(model, orig_model, opt, shd, scalar, ema, logger, metrics, data_proces
 
         # Step opt. Divide by scale to include clipping and fp16 scaling
         logger.step()
-        opt.step(scale=clipped_grad_scale(grad_norm, hps.clip, scale))
-        zero_grad(orig_model)
-        lr = hps.lr if shd is None else shd.get_lr()[0]
-        if shd is not None: shd.step()
-        if ema is not None: ema.step()
-        next_lr = hps.lr if shd is None else shd.get_lr()[0]
-        finished_training = (next_lr == 0.0)
+        #opt.step(scale=clipped_grad_scale(grad_norm, hps.clip, scale))
+        #zero_grad(orig_model)
+        scalar.step(opt)
+        scalar.update()
+
 
         # Logging
         for key, val in _metrics.items():
@@ -289,14 +300,14 @@ def run(hps="teeny", port=29500, **kwargs):
     hps.num_total_iter = len(data_processor.train_loader) * hps.epochs
 
     # Setup models
-    vqvae = make_vqvae(hps, device)
-    print_once(f"Parameters VQVAE:{count_parameters(vqvae)}")
+    nvae = make_nvae(hps, device)
+    print_once(f"Parameters NVAE:{count_parameters(nvae)}")
     if hps.prior:
         prior = make_prior(hps, vqvae, device)
         print_once(f"Parameters Prior:{count_parameters(prior)}")
         model = prior
     else:
-        model = vqvae
+        model = nvae
 
     # Setup opt, ema and distributed_model.
     opt, shd, scalar = get_optimizer(model, hps)
@@ -305,6 +316,8 @@ def run(hps="teeny", port=29500, **kwargs):
 
     logger, metrics = init_logging(hps, local_rank, rank)
     logger.iters = model.step
+    
+    warmup_iters = len(data_processor.train_loader) * hps.warmup_epochs
 
     # Run training, eval, sample
     for epoch in range(hps.curr_epoch, hps.epochs):
@@ -314,7 +327,7 @@ def run(hps="teeny", port=29500, **kwargs):
             shd.step()
         if hps.train:
 
-            train_metrics = train(distributed_model, model, global_step, opt, shd, scalar, ema, logger, metrics, data_processor, hps)
+            train_metrics = train(distributed_model, model, global_step, warmup_iters,opt, shd, scalar, ema, logger, metrics, data_processor, hps)
             train_metrics['epoch'] = epoch
             if rank == 0:
                 print('Train',' '.join([f'{key}: {val:0.4f}' for key,val in train_metrics.items()]))

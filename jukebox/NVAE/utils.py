@@ -235,14 +235,14 @@ def log_iw(decoder, x, log_q, log_p, crop=False):
 
 
 def reconstruction_loss(decoder, x, crop=False):
-    from distributions import Normal, DiscMixLogistic
+    from jukebox.NVAE.distributions import Normal, DiscMixLogistic
 
     recon = decoder.log_prob(x)
     if crop:
         recon = recon[:, :, 2:30, 2:30]
     
     if isinstance(decoder, DiscMixLogistic):
-        return - torch.sum(recon)    # summation over RGB is done.
+        return - torch.sum(recon, dim=1)    # summation over RGB is done.
     else:
         return - torch.sum(recon, dim=[1, 2, 3])
 
@@ -282,15 +282,13 @@ def average_tensor(t, is_distributed):
         t.data /= size
 
 
-def one_hot(indices, depth, dim):
-    indices = indices.unsqueeze(dim)
-    size = list(indices.size())
-    size[dim] = depth
-    y_onehot = torch.zeros(size).cuda()
-    y_onehot.zero_()
-    y_onehot.scatter_(dim, indices, 1)
-
-    return y_onehot
+def to_one_hot(tensor, n, fill_with=1.):
+    # we perform one hot encore with respect to the last axis
+    one_hot = torch.FloatTensor(tensor.size() + (n,)).zero_()
+    if tensor.is_cuda:
+        one_hot = one_hot.cuda()
+    one_hot.scatter_(len(tensor.size()), tensor.unsqueeze(-1), fill_with)
+    return one_hot
 
 
 def num_output(dataset):

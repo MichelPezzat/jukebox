@@ -11,7 +11,7 @@ from jukebox.hparams import REMOTE_PREFIX
 from jukebox.utils.remote_utils import download
 from jukebox.utils.torch_utils import freeze_model
 from jukebox.utils.dist_utils import print_all
-from jukebox.vqvae.vqvae import calculate_strides
+#from jukebox.vqvae.vqvae import calculate_strides
 import fire
 
 MODELS = {
