@@ -510,7 +510,7 @@ DEFAULTS["nvae"] = Hyperparams(
     use_se=False,
     res_dist=False,
     cont_training=False,
-    num_x_bits=32,
+    num_x_bits=16,
     normal_enc=['res_bnswish', 'res_bnswish'],
     down_enc=['res_bnswish', 'res_bnswish'],
     normal_dec=['mconv_e6k5g0'],
@@ -567,7 +567,7 @@ DEFAULTS["opt"] = Hyperparams(
     lr_start_linear_decay=0,
     lr_use_cosine_decay=False,
     learning_rate_min=0.0001,
-    warmup_epochs=5,
+    warmup_epochs=1,
 )
 
 DEFAULTS["fp16"] = Hyperparams(

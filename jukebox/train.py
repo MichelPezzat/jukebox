@@ -212,7 +212,7 @@ def train(model, orig_model, global_step, warmup_iters,opt, shd, scalar, ema, lo
         
         if global_step < warmup_iters:
             lr = hps.lr * float(global_step) / warmup_iters
-            for param_group in cnn_optimizer.param_groups:
+            for param_group in opt.param_groups:
                 param_group['lr'] = lr
 
         if hps.prior:
@@ -237,10 +237,12 @@ def train(model, orig_model, global_step, warmup_iters,opt, shd, scalar, ema, lo
 
         # Step opt. Divide by scale to include clipping and fp16 scaling
         logger.step()
+        lr = hps.lr if shd is None else shd.get_lr()[0]
         #opt.step(scale=clipped_grad_scale(grad_norm, hps.clip, scale))
         #zero_grad(orig_model)
         scalar.step(opt)
         scalar.update()
+        finished_training = (hps.lr == 0.0)
 
 
         # Logging
