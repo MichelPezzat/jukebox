@@ -23,7 +23,8 @@ BN_EPS = 1e-5
 SYNC_BN = True
 
 OPS = OrderedDict([
-    ('res_elu', lambda Cin, Cout, stride,checkpoint_res: ELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
+    ('res_elu3', lambda Cin, Cout, stride,checkpoint_res: RELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
+    ('res_elu', lambda Cin, Cout, stride,checkpoint_res: RELUConv(Cin, Cout, 1, stride, 0,checkpoint_res)),
     ('res_bnelu', lambda Cin, Cout, stride,checkpoint_res: BNELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
     ('res_bnswish', lambda Cin, Cout, stride,checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
     ('res_bnswish5', lambda Cin, Cout, stride,checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, 2, 2,checkpoint_res)),
@@ -175,16 +176,16 @@ def get_batchnorm(*args, **kwargs):
         return nn.BatchNorm2d(*args, **kwargs)
 
 
-class ELUConv(nn.Module):
+class RELUConv(nn.Module):
     def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1):
         super(ELUConv, self).__init__()
         self.upsample = stride == -1
         stride = abs(stride)
-        self.conv_0 = Conv2D(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=True, dilation=dilation,
+        self.conv_0 = Conv1D(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=True, dilation=dilation,
                              data_init=True)
 
     def forward(self, x):
-        out = F.elu(x)
+        out = F.relu(x)
         if self.upsample:
             out = F.interpolate(out, scale_factor=2, mode='nearest')
         out = self.conv_0(out)
