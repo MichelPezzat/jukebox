@@ -179,4 +179,3 @@ class DiscMixLogistic:
 
 
         return x
-

@@ -189,7 +189,9 @@ def evaluate(model, orig_model, logger, metrics, data_processor, hps):
     logger.close_range()
     return {key: metrics.avg(f"test_{key}") for key in _metrics.keys()}
 
+
 def train(model, orig_model, global_step, warmup_iters,opt, shd, scalar, ema, logger, metrics, data_processor, hps):
+
     model.train()
     orig_model.train()
     if hps.prior:
@@ -210,15 +212,15 @@ def train(model, orig_model, global_step, warmup_iters,opt, shd, scalar, ema, lo
         x_in = x = audio_preprocess(x, hps)
         log_input_output = (logger.iters % hps.save_iters == 0)
         
-        if global_step < warmup_iters:
-            lr = hps.lr * float(global_step) / warmup_iters
+        if logger.iters < warmup_iters:
+            lr = hps.lr * float(logger.iters) / warmup_iters
             for param_group in opt.param_groups:
                 param_group['lr'] = lr
 
         if hps.prior:
             forw_kwargs = dict(y=y, fp16=hps.fp16, decode=log_input_output)
         else:
-            forw_kwargs = dict(global_step=global_step, args=hps)
+            forw_kwargs = dict(global_step=logger.iters, args=hps)
         
         opt.zero_grad()
 
