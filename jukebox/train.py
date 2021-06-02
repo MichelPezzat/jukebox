@@ -79,7 +79,7 @@ def get_optimizer(model, hps):
     # lr scheduler
     if hps.lr_use_linear_decay:
       shd = t.optim.lr_scheduler.CosineAnnealingLR(
-        opt, float(hps.epochs - hps.lr_warmup - 1), eta_min=hps.learning_rate_min)
+        opt, float(hps.epochs - hps.warmup_epochs - 1), eta_min=hps.learning_rate_min)
 
     restore_path = hps.restore_prior if hps.prior else hps.restore_vqvae
     restore_opt(opt, shd, restore_path)
@@ -190,7 +190,7 @@ def evaluate(model, orig_model, logger, metrics, data_processor, hps):
     return {key: metrics.avg(f"test_{key}") for key in _metrics.keys()}
 
 
-def train(model, orig_model, global_step, warmup_iters,opt, shd, scalar, ema, logger, metrics, data_processor, hps):
+def train(model, orig_model, warmup_iters,opt, shd, scalar, ema, logger, metrics, data_processor, hps):
 
     model.train()
     orig_model.train()
@@ -300,7 +300,6 @@ def run(hps="teeny", port=29500, **kwargs):
 
     # Setup dataset
     data_processor = DataProcessor(hps)
-    global_step=0
     hps.num_total_iter = len(data_processor.train_loader) * hps.epochs
 
     # Setup models
@@ -331,7 +330,7 @@ def run(hps="teeny", port=29500, **kwargs):
             shd.step()
         if hps.train:
 
-            train_metrics = train(distributed_model, model, global_step, warmup_iters,opt, shd, scalar, ema, logger, metrics, data_processor, hps)
+            train_metrics = train(distributed_model, model, warmup_iters,opt, shd, scalar, ema, logger, metrics, data_processor, hps)
             train_metrics['epoch'] = epoch
             if rank == 0:
                 print('Train',' '.join([f'{key}: {val:0.4f}' for key,val in train_metrics.items()]))

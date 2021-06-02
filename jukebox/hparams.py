@@ -567,7 +567,7 @@ DEFAULTS["opt"] = Hyperparams(
     lr_start_linear_decay=0,
     lr_use_cosine_decay=False,
     learning_rate_min=0.0001,
-    warmup_epochs=1,
+    warmup_epochs=4,
 )
 
 DEFAULTS["fp16"] = Hyperparams(
