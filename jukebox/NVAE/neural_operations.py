@@ -23,8 +23,7 @@ BN_EPS = 1e-5
 SYNC_BN = True
 
 OPS = OrderedDict([
-    ('res_elu3', lambda Cin, Cout, stride,checkpoint_res: RELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
-    ('res_elu', lambda Cin, Cout, stride,checkpoint_res: RELUConv(Cin, Cout, 1, stride, 0,checkpoint_res)),
+    ('res_elu', lambda Cin, Cout, stride,checkpoint_res: ELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
     ('res_bnelu', lambda Cin, Cout, stride,checkpoint_res: BNELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
     ('res_bnswish', lambda Cin, Cout, stride,checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
     ('res_bnswish5', lambda Cin, Cout, stride,checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, 2, 2,checkpoint_res)),
@@ -119,7 +118,7 @@ class Conv1D(nn.Conv1d):
             with torch.no_grad():
                 weight = self.weight / (norm(self.weight, dim=[1, 2]).view(-1, 1, 1) + 1e-5)
                 bias = None
-                out = F.conv1d(x, weight.type_as(x), bias.type_as(x), self.stride, self.padding, self.dilation, self.groups)
+                out = F.conv1d(x, weight.type_as(x), bias.type_as(x) if bias!=None else bias, self.stride, self.padding, self.dilation, self.groups)
                 mn = torch.mean(out, dim=[0, 2])
                 st = 5 * torch.std(out, dim=[0, 2])
 
@@ -176,36 +175,44 @@ def get_batchnorm(*args, **kwargs):
         return nn.BatchNorm2d(*args, **kwargs)
 
 
-class RELUConv(nn.Module):
-    def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1):
+class ELUConv(nn.Module):
+    def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1, checkpoint_res=False):
         super(ELUConv, self).__init__()
         self.upsample = stride == -1
         stride = abs(stride)
         self.conv_0 = Conv1D(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=True, dilation=dilation,
                              data_init=True)
+        self.checkpoint_res = checkpoint_res
 
-    def forward(self, x):
-        out = F.relu(x)
+    def forward(self, x, sample=False):
+        out = F.elu(x)
         if self.upsample:
             out = F.interpolate(out, scale_factor=2, mode='nearest')
-        out = self.conv_0(out)
+        if self.checkpoint_res == 1 and not sample:
+            out = checkpoint(self.conv_0, (out, ), self.conv_0.parameters(), True) 
+        else:    
+            out = self.conv_0(out)
         return out
 
 
 class BNELUConv(nn.Module):
-    def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1):
+    def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1, checkpoint_res=False):
         super(BNELUConv, self).__init__()
         self.upsample = stride == -1
         stride = abs(stride)
         self.bn = get_batchnorm(C_in, eps=BN_EPS, momentum=0.05)
-        self.conv_0 = Conv2D(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=True, dilation=dilation)
+        self.conv_0 = Conv1D(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=True, dilation=dilation)
+        self.checkpoint_res = checkpoint_res
 
-    def forward(self, x):
+    def forward(self, x, sample=False):
         x = self.bn(x)
         out = F.elu(x)
         if self.upsample:
             out = F.interpolate(out, scale_factor=2, mode='nearest')
-        out = self.conv_0(out)
+        if self.checkpoint_res == 1 and not sample:
+            out = checkpoint(self.conv_0, (out, ), self.conv_0.parameters(), True) 
+        else:    
+            out = self.conv_0(out)
         return out
 
 

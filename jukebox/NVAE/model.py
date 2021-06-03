@@ -173,7 +173,7 @@ class AutoEncoder(nn.Module):
 
         if self.vanilla_vae:
             self.dec_tower = []
-            self.stem_decoder = Conv2D(self.num_latent_per_group, mult * self.num_channels_enc, (1, 1), bias=True)
+            self.stem_decoder = Conv1D(self.num_latent_per_group, mult * self.num_channels_enc, 1, bias=True)
         else:
             self.dec_tower, mult = self.init_decoder_tower(mult)
 
@@ -449,8 +449,8 @@ class AutoEncoder(nn.Module):
         for cell in self.post_process:
             s = cell(s)
         
-        if not fp16_out:
-            s = s.float()        
+        #if not fp16_out:
+         #   s = s.float()        
 
         logits = self.image_conditional(s)
 
@@ -518,7 +518,7 @@ class AutoEncoder(nn.Module):
         
         metrics.update(dict(
             recon_loss=torch.mean(recon_loss),
-            bn_loss =bn_loss,
+            bn_loss =torch.tensor(bn_loss),
             norm_loss=norm_loss,
             wdn_coeff=torch.tensor(wdn_coeff),
             kl_all=torch.mean(sum(kl_all)),
