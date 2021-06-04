@@ -81,7 +81,8 @@ def make_nvae(hps, device='cuda'):
                 num_preprocess_cells=hps.num_preprocess_cells, num_channels_dec=hps.num_channels_dec,
                 num_postprocess_cells=hps.num_postprocess_cells, num_postprocess_blocks=hps.num_postprocess_blocks,
                 use_se=hps.use_se, res_dist=hps.res_dist,ada_groups=hps.ada_groups, 
-                num_x_bits=hps.num_x_bits, checkpoint_res=hps.c_res if hps.train else 0)
+                num_x_bits=hps.num_x_bits, dilation_growth_rate=hps.dilation_growth_rate,
+                checkpoint_res=hps.c_res if hps.train else 0)
     
     arch_instance = dict(normal_enc=hps.normal_enc, down_enc=hps.down_enc, normal_dec=hps.normal_dec,
                          up_dec=hps.up_dec, normal_pre=hps.normal_pre,
