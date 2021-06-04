@@ -24,7 +24,7 @@ CHANNEL_MULT = 2
 
 
 class Cell(nn.Module):
-    def __init__(self, Cin, Cout, cell_type, arch, use_se,checkpoint_res=False):
+    def __init__(self, Cin, Cout, cell_type, arch, use_se, dilation=1, checkpoint_res=False):
         super(Cell, self).__init__()
         self.cell_type = cell_type
 
@@ -37,7 +37,7 @@ class Cell(nn.Module):
             stride = get_stride_for_cell_type(self.cell_type) if i == 0 else 1
             C = Cin if i == 0 else Cout
             primitive = arch[i]
-            op = OPS[primitive](C, Cout, stride,checkpoint_res)
+            op = OPS[primitive](C, Cout, stride, dilation, checkpoint_res)
             self._ops.append(op)
 
         # SE
@@ -109,6 +109,7 @@ class AutoEncoder(nn.Module):
                 num_preprocess_cells, num_channels_dec,
                 num_postprocess_cells, num_postprocess_blocks,
                 use_se, res_dist,ada_groups,checkpoint_res,
+                dilation_growth_rate,
                 num_x_bits,arch_instance):
         super(AutoEncoder, self).__init__()
         #self.writer = writer
@@ -119,6 +120,7 @@ class AutoEncoder(nn.Module):
         self.res_dist = res_dist
         self.num_bits = num_x_bits
         self.checkpoint_res = checkpoint_res
+        self.dilation_growth_rate = dilation_growth_rate
         #self.spectral = args.spectral
         #self.multispectral = args.multispectral
 
@@ -173,7 +175,7 @@ class AutoEncoder(nn.Module):
 
         if self.vanilla_vae:
             self.dec_tower = []
-            self.stem_decoder = Conv1D(self.num_latent_per_group, mult * self.num_channels_enc, 1, bias=True)
+            self.stem_decoder = Conv2D(self.num_latent_per_group, mult * self.num_channels_enc, (1, 1), bias=True)
         else:
             self.dec_tower, mult = self.init_decoder_tower(mult)
 
@@ -210,16 +212,17 @@ class AutoEncoder(nn.Module):
         pre_process = nn.ModuleList()
         for b in range(self.num_preprocess_blocks):
             for c in range(self.num_preprocess_cells):
+                dilation = self.dilation_growth_rate**c
                 if c == self.num_preprocess_cells - 1:
                     arch = self.arch_instance['down_pre']
                     num_ci = int(self.num_channels_enc * mult)
                     num_co = int(CHANNEL_MULT * num_ci)
-                    cell = Cell(num_ci, num_co, cell_type='down_pre', arch=arch, use_se=self.use_se, checkpoint_res=self.checkpoint_res)
+                    cell = Cell(num_ci, num_co, cell_type='down_pre', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
                     mult = CHANNEL_MULT * mult
                 else:
                     arch = self.arch_instance['normal_pre']
                     num_c = self.num_channels_enc * mult
-                    cell = Cell(num_c, num_c, cell_type='normal_pre', arch=arch, use_se=self.use_se, checkpoint_res=self.checkpoint_res)
+                    cell = Cell(num_c, num_c, cell_type='normal_pre', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
 
                 pre_process.append(cell)
 
@@ -229,10 +232,11 @@ class AutoEncoder(nn.Module):
         enc_tower = nn.ModuleList()
         for s in range(self.num_latent_scales):
             for g in range(self.groups_per_scale[s]):
+                dilatation = self.dilation_growth_rate**c
                 for c in range(self.num_cell_per_cond_enc):
                     arch = self.arch_instance['normal_enc']
                     num_c = int(self.num_channels_enc * mult)
-                    cell = Cell(num_c, num_c, cell_type='normal_enc', arch=arch, use_se=self.use_se,checkpoint_res=self.checkpoint_res)
+                    cell = Cell(num_c, num_c, cell_type='normal_enc', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
                     enc_tower.append(cell)
 
                 # add encoder combiner
@@ -247,7 +251,7 @@ class AutoEncoder(nn.Module):
                 arch = self.arch_instance['down_enc']
                 num_ci = int(self.num_channels_enc * mult)
                 num_co = int(CHANNEL_MULT * num_ci)
-                cell = Cell(num_ci, num_co, cell_type='down_enc', arch=arch, use_se=self.use_se, checkpoint_res=self.checkpoint_res)
+                cell = Cell(num_ci, num_co, cell_type='down_enc', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
                 enc_tower.append(cell)
                 mult = CHANNEL_MULT * mult
 
@@ -292,11 +296,12 @@ class AutoEncoder(nn.Module):
         dec_tower = nn.ModuleList()
         for s in range(self.num_latent_scales):
             for g in range(self.groups_per_scale[self.num_latent_scales - s - 1]):
+                dilation = self.dilation_growth_rate**(self.num_postprocess_blocks-1-b)
                 num_c = int(self.num_channels_dec * mult)
                 if not (s == 0 and g == 0):
                     for c in range(self.num_cell_per_cond_dec):
                         arch = self.arch_instance['normal_dec']
-                        cell = Cell(num_c, num_c, cell_type='normal_dec', arch=arch, use_se=self.use_se, checkpoint_res=self.checkpoint_res)
+                        cell = Cell(num_c, num_c, cell_type='normal_dec', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
                         dec_tower.append(cell)
 
                 cell = DecCombinerCell(num_c, self.num_latent_per_group, num_c, cell_type='combiner_dec')
@@ -307,7 +312,7 @@ class AutoEncoder(nn.Module):
                 arch = self.arch_instance['up_dec']
                 num_ci = int(self.num_channels_dec * mult)
                 num_co = int(num_ci / CHANNEL_MULT)
-                cell = Cell(num_ci, num_co, cell_type='up_dec', arch=arch, use_se=self.use_se, checkpoint_res=self.checkpoint_res)
+                cell = Cell(num_ci, num_co, cell_type='up_dec', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
                 dec_tower.append(cell)
                 mult = mult / CHANNEL_MULT
 
@@ -316,17 +321,18 @@ class AutoEncoder(nn.Module):
     def init_post_process(self, mult):
         post_process = nn.ModuleList()
         for b in range(self.num_postprocess_blocks):
+            dilation = self.dilation_growth_rate**(self.num_postprocess_blocks-1-b)
             for c in range(self.num_postprocess_cells):
                 if c == 0:
                     arch = self.arch_instance['up_post']
                     num_ci = int(self.num_channels_dec * mult)
                     num_co = int(num_ci / CHANNEL_MULT)
-                    cell = Cell(num_ci, num_co, cell_type='up_post', arch=arch, use_se=self.use_se, checkpoint_res=self.checkpoint_res)
+                    cell = Cell(num_ci, num_co, cell_type='up_post', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
                     mult = mult / CHANNEL_MULT
                 else:
                     arch = self.arch_instance['normal_post']
                     num_c = int(self.num_channels_dec * mult)
-                    cell = Cell(num_c, num_c, cell_type='normal_post', arch=arch, use_se=self.use_se, checkpoint_res=self.checkpoint_res)
+                    cell = Cell(num_c, num_c, cell_type='normal_post', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
 
                 post_process.append(cell)
 
@@ -449,8 +455,8 @@ class AutoEncoder(nn.Module):
         for cell in self.post_process:
             s = cell(s)
         
-        #if not fp16_out:
-         #   s = s.float()        
+        if not fp16_out:
+            s = s.float()        
 
         logits = self.image_conditional(s)
 
@@ -518,7 +524,7 @@ class AutoEncoder(nn.Module):
         
         metrics.update(dict(
             recon_loss=torch.mean(recon_loss),
-            bn_loss =torch.tensor(bn_loss),
+            bn_loss =bn_loss,
             norm_loss=norm_loss,
             wdn_coeff=torch.tensor(wdn_coeff),
             kl_all=torch.mean(sum(kl_all)),
