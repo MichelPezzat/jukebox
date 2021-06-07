@@ -59,6 +59,8 @@ NVAE architecture is practically the same from the original, but some changes we
 
 * Autoregressive Convs were changed to causal as in [Clarinet](https://github.com/ksw0306/ClariNet/tree/df31b4c4ea78d3b52274632791d0a2c6e8ed6b64)
 
+* Adding exponential growth dilation to residual cells
+
 More changes are expected to be made, as this project is still on experimental stage.
 
 # Citation

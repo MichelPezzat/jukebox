@@ -24,8 +24,8 @@ SYNC_BN = True
 
 OPS = OrderedDict([
     ('res_elu', lambda Cin, Cout, stride,checkpoint_res: ELUConv(Cin, Cout, 3, stride, 1,checkpoint_res)),
-    ('res_bnelu', lambda Cin, Cout, stride, dilation, checkpoint_res: BNELUConv(Cin, Cout, 3, stride, dilation, checkpoint_res)),
-    ('res_bnelu1x1', lambda Cin, Cout, stride, dilation, checkpoint_res: BNELUConv(Cin, Cout, 1, stride, dilation=1, checkpoint_res)),
+    ('res_bnelu', lambda Cin, Cout, stride, dilation, checkpoint_res: BNELUConv(Cin, Cout, 3, stride, dilation, dilation, checkpoint_res)),
+    ('res_bnelu1x1', lambda Cin, Cout, stride, dilation, checkpoint_res: BNELUConv(Cin, Cout, 1, stride, dilation=1, checkpoint_res=checkpoint_res)),
     ('res_bnswish', lambda Cin, Cout, stride, dilation, checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, dilation, checkpoint_res)),
     ('res_bnswish5', lambda Cin, Cout, stride, dilation, checkpoint_res: BNSwishConv(Cin, Cout, 3, stride, dilation, 2,checkpoint_res)),
     ('mconv_e6k5g0', lambda Cin, Cout, stride,checkpoint_res: InvertedResidual(Cin, Cout, stride, ex=6, dil=1, k=5, g=0,checkpoint_res=checkpoint_res)),
@@ -197,11 +197,10 @@ class ELUConv(nn.Module):
 
 
 class BNELUConv(nn.Module):
-    def __init__(self, C_in, C_out, kernel_size, stride=1, dilation=1, checkpoint_res=False):
+    def __init__(self, C_in, C_out, kernel_size, stride=1, padding=0, dilation=1, checkpoint_res=False):
         super(BNELUConv, self).__init__()
         self.upsample = stride == -1
         stride = abs(stride)
-        padding=dilation if dilation !=1 else 0
         self.bn = get_batchnorm(C_in, eps=BN_EPS, momentum=0.05)
         self.conv_0 = Conv1D(C_in, C_out, kernel_size, stride=stride, padding=padding, bias=True, dilation=dilation)
         self.checkpoint_res = checkpoint_res

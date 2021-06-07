@@ -81,9 +81,7 @@ class FilesAudioDataset(Dataset):
         filename, total_length = self.files[index], self.durations[index]
         data, sr = load_audio(filename, sr=self.sr, offset=offset, duration=self.sample_length)
         assert data.shape == (self.channels, self.sample_length), f'Expected {(self.channels, self.sample_length)}, got {data.shape}'
-        if abs(data).max() > 1:
-            print('warning: audio amplitude out of range, auto clipped.')
-            data = data.clip(-1, 1)
+
         if self.labels:
             artist, genre, lyrics = self.get_metadata(filename, test)
             labels = self.labeller.get_label(artist, genre, lyrics, total_length, offset)

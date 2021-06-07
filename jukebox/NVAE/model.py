@@ -49,7 +49,7 @@ class Cell(nn.Module):
         skip = self.skip(s)
         for i in range(self._num_nodes):
             s = self._ops[i](s, sample)
-
+          
         s = self.se(s) if self.use_se else s
         return skip + 0.1 * s
 
@@ -175,7 +175,7 @@ class AutoEncoder(nn.Module):
 
         if self.vanilla_vae:
             self.dec_tower = []
-            self.stem_decoder = Conv2D(self.num_latent_per_group, mult * self.num_channels_enc, (1, 1), bias=True)
+            self.stem_decoder = Conv1D(self.num_latent_per_group, mult * self.num_channels_enc, 1, bias=True)
         else:
             self.dec_tower, mult = self.init_decoder_tower(mult)
 
@@ -232,8 +232,8 @@ class AutoEncoder(nn.Module):
         enc_tower = nn.ModuleList()
         for s in range(self.num_latent_scales):
             for g in range(self.groups_per_scale[s]):
-                dilatation = self.dilation_growth_rate**c
                 for c in range(self.num_cell_per_cond_enc):
+                    dilation = self.dilation_growth_rate**c
                     arch = self.arch_instance['normal_enc']
                     num_c = int(self.num_channels_enc * mult)
                     cell = Cell(num_c, num_c, cell_type='normal_enc', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
@@ -296,10 +296,10 @@ class AutoEncoder(nn.Module):
         dec_tower = nn.ModuleList()
         for s in range(self.num_latent_scales):
             for g in range(self.groups_per_scale[self.num_latent_scales - s - 1]):
-                dilation = self.dilation_growth_rate**(self.num_postprocess_blocks-1-b)
                 num_c = int(self.num_channels_dec * mult)
                 if not (s == 0 and g == 0):
                     for c in range(self.num_cell_per_cond_dec):
+                        dilation = self.dilation_growth_rate**(self.num_cell_per_cond_dec-1-c)
                         arch = self.arch_instance['normal_dec']
                         cell = Cell(num_c, num_c, cell_type='normal_dec', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
                         dec_tower.append(cell)
@@ -312,7 +312,7 @@ class AutoEncoder(nn.Module):
                 arch = self.arch_instance['up_dec']
                 num_ci = int(self.num_channels_dec * mult)
                 num_co = int(num_ci / CHANNEL_MULT)
-                cell = Cell(num_ci, num_co, cell_type='up_dec', arch=arch, use_se=self.use_se, dilation=dilation, checkpoint_res=self.checkpoint_res)
+                cell = Cell(num_ci, num_co, cell_type='up_dec', arch=arch, use_se=self.use_se, dilation=1, checkpoint_res=self.checkpoint_res)
                 dec_tower.append(cell)
                 mult = mult / CHANNEL_MULT
 
